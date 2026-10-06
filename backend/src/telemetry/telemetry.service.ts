@@ -26,6 +26,9 @@ type AggRow = {
   gas_avg: number | null;
   gas_min: number | null;
   gas_max: number | null;
+  mag_avg: number | null;
+  mag_min: number | null;
+  mag_max: number | null;
   motion_count: number;
   ir_count: number;
 };
@@ -53,6 +56,11 @@ function toAggDto(r: AggRow) {
       avg: round1(r.gas_avg),
       min: num(r.gas_min),
       max: num(r.gas_max),
+    },
+    magnetic_raw: {
+      avg: round1(r.mag_avg),
+      min: num(r.mag_min),
+      max: num(r.mag_max),
     },
     motion_count: Number(r.motion_count),
     ir_count: Number(r.ir_count),
@@ -100,7 +108,7 @@ export class TelemetryService {
       resolution === '1h' ? sql.raw('telemetry_1h') : sql.raw('telemetry_1d');
     const { rows } = await this.db.execute<AggRow>(sql`
       SELECT bucket, device_id, samples, temp_avg, temp_min, temp_max, hum_avg, hum_min, hum_max,
-             gas_avg, gas_min, gas_max, motion_count, ir_count
+             gas_avg, gas_min, gas_max, mag_avg, mag_min, mag_max, motion_count, ir_count
       FROM ${view}
       WHERE device_id = ${deviceId} AND bucket >= ${period.from} AND bucket < ${period.to}
       ORDER BY bucket
@@ -128,6 +136,9 @@ export class TelemetryService {
         sum(gas_avg::double precision * samples) FILTER (WHERE gas_avg IS NOT NULL)
           / NULLIF(sum(samples) FILTER (WHERE gas_avg IS NOT NULL), 0) AS gas_avg,
         min(gas_min) AS gas_min, max(gas_max) AS gas_max,
+        sum(mag_avg::double precision * samples) FILTER (WHERE mag_avg IS NOT NULL)
+          / NULLIF(sum(samples) FILTER (WHERE mag_avg IS NOT NULL), 0) AS mag_avg,
+        min(mag_min) AS mag_min, max(mag_max) AS mag_max,
         coalesce(sum(motion_count), 0)::integer AS motion_count,
         coalesce(sum(ir_count), 0)::integer AS ir_count,
         coalesce(sum(interval_s), 0)::bigint AS covered_s
@@ -171,6 +182,11 @@ export class TelemetryService {
         min: num(s.gas_min),
         max: num(s.gas_max),
       },
+      magnetic_raw: {
+        avg: round1(s.mag_avg),
+        min: num(s.mag_min),
+        max: num(s.mag_max),
+      },
       motion_count: Number(s.motion_count),
       ir_count: Number(s.ir_count),
       alerts: {
@@ -207,6 +223,9 @@ export class TelemetryService {
       'gas_raw_avg',
       'gas_raw_min',
       'gas_raw_max',
+      'magnetic_raw_avg',
+      'magnetic_raw_min',
+      'magnetic_raw_max',
       'motion_count',
       'ir_count',
     ];
@@ -226,6 +245,9 @@ export class TelemetryService {
         p.gas_raw.avg,
         p.gas_raw.min,
         p.gas_raw.max,
+        p.magnetic_raw.avg,
+        p.magnetic_raw.min,
+        p.magnetic_raw.max,
         p.motion_count,
         p.ir_count,
       ]

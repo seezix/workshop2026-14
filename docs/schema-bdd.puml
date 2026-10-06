@@ -65,6 +65,7 @@ package "Séries temporelles (TimescaleDB)" {
     temp_avg / temp_min / temp_max / temp_last : real
     hum_avg / hum_min / hum_max / hum_last : real
     gas_avg / gas_min / gas_max / gas_last : smallint
+    mag_avg / mag_min / mag_max / mag_last : smallint
     * motion_count : smallint
     * ir_count : smallint
     rssi_dbm : smallint
@@ -86,7 +87,7 @@ package "Séries temporelles (TimescaleDB)" {
     * bucket : timestamptz
     * device_id : text
     --
-    temp / hum / gas : avg pondéré, min, max
+    temp / hum / gas / mag : avg pondéré, min, max
     motion_count / ir_count : somme
     samples : somme
     .. recalculées par Timescale ..

@@ -23,6 +23,12 @@ export function toTelemetryDto(r: TelemetryRow) {
       last: r.humLast,
     },
     gas_raw: { avg: r.gasAvg, min: r.gasMin, max: r.gasMax, last: r.gasLast },
+    magnetic_raw: {
+      avg: r.magAvg,
+      min: r.magMin,
+      max: r.magMax,
+      last: r.magLast,
+    },
     motion_count: r.motionCount,
     ir_count: r.irCount,
     rssi_dbm: r.rssiDbm,

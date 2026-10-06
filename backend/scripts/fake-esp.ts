@@ -2,12 +2,12 @@
 // travailler sans matériel. Publie status / telemetry / events, applique la
 // config retained et acquitte les commandes.
 //
-//   npm run sim:esp                      boîtier SX-001, mesures toutes les 10 s
+//   npm run sim:esp                      boîtier SX-001, mesures toutes les 20 s
 //   npm run sim:esp -- --auto            + détections aléatoires
 //   npm run sim:esp -- --id SX-002 --interval 5
 //
 // Au clavier (lettre puis Entrée) : m mouvement, i présence IR, g gaz,
-// t sabotage, f panne capteur, q quitter.
+// t sabotage, f panne capteur, a aimant (champ magnétique), q quitter.
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import mqtt from 'mqtt';
@@ -15,7 +15,7 @@ import mqtt from 'mqtt';
 const { values: args } = parseArgs({
   options: {
     id: { type: 'string', default: 'SX-001' },
-    interval: { type: 'string', default: '10' },
+    interval: { type: 'string', default: '20' },
     auto: { type: 'boolean', default: false },
   },
 });
@@ -26,7 +26,7 @@ const MQTT_URL = process.env.MQTT_URL ?? 'mqtt://localhost:1883';
 const SAMPLE_EVERY_S = 2;
 const BOOT_AT = Date.now();
 
-let intervalS = Math.max(1, Number(args.interval) || 10);
+let intervalS = Math.max(1, Number(args.interval) || 20);
 let armed = true;
 let seq = 0;
 let timer: NodeJS.Timeout | undefined;
@@ -34,6 +34,8 @@ let motionCount = 0;
 let irCount = 0;
 // Hausse de gaz en cours : s'ajoute aux lectures puis retombe à chaque période.
 let gasBoost = 0;
+// Aimant approché du capteur Hall : décalage appliqué à la période en cours.
+let magnetOffset = 0;
 const seenCommands = new Set<string>();
 
 const log = (msg: string) =>
@@ -52,6 +54,8 @@ function sensor(rest: number, step: number) {
 const readTemp = sensor(22, 0.15);
 const readHum = sensor(45, 0.4);
 const readGas = sensor(300, 6);
+// OH49E : ~512 au repos (VCC/2 sur un ADC 10 bits), l'aimant décale la valeur.
+const readMag = sensor(512, 2);
 
 function summary(read: () => number, digits: (v: number) => number, n: number) {
   const values = Array.from({ length: n }, read);
@@ -98,6 +102,7 @@ function event(type: string, extra: object = {}) {
 function telemetry() {
   const samples = Math.max(1, Math.round(intervalS / SAMPLE_EVERY_S));
   const gas = () => Math.min(32767, Math.max(0, readGas() + gasBoost));
+  const mag = () => Math.min(1023, Math.max(0, readMag() + magnetOffset));
   const msg = {
     seq: seq++,
     uptime_ms: Date.now() - BOOT_AT,
@@ -106,17 +111,19 @@ function telemetry() {
     temperature_c: summary(readTemp, round1, samples),
     humidity_pct: summary(readHum, round1, samples),
     gas_raw: summary(gas, Math.round, samples),
+    magnetic_raw: summary(mag, Math.round, samples),
     motion_count: motionCount,
     ir_count: irCount,
     rssi_dbm: Math.round(rand(-70, -55)),
   };
   publish('telemetry', msg);
   log(
-    `→ telemetry ${msg.temperature_c.last} °C, ${msg.humidity_pct.last} %, gaz ${msg.gas_raw.last}`,
+    `→ telemetry ${msg.temperature_c.last} °C, ${msg.humidity_pct.last} %, gaz ${msg.gas_raw.last}, mag ${msg.magnetic_raw.last}`,
   );
   motionCount = 0;
   irCount = 0;
   gasBoost = Math.max(0, gasBoost - 150);
+  magnetOffset = 0;
 }
 
 function schedule() {
@@ -143,6 +150,11 @@ const triggers: Record<string, () => void> = {
     event('GAS_RISE');
   },
   t: () => event('TAMPER'),
+  a: () => {
+    // Pôle au hasard : la valeur monte ou descend autour du repos.
+    magnetOffset = (Math.random() < 0.5 ? -1 : 1) * Math.round(rand(150, 350));
+    log(`Aimant approché (${magnetOffset > 0 ? '+' : ''}${magnetOffset})`);
+  },
   f: () => event('SENSOR_FAILURE', { sensor: 'dht22' }),
 };
 
@@ -237,6 +249,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const key = line.trim().toLowerCase();
   if (key === 'q') void quit();
   else if (triggers[key]) triggers[key]();
-  else if (key) log('Touches : m, i, g, t, f, q');
+  else if (key) log('Touches : m, i, g, t, f, a, q');
 });
 process.on('SIGINT', () => void quit());

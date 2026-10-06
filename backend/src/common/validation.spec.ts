@@ -69,6 +69,7 @@ describe('TelemetryMessage', () => {
       temperature_c: { avg: 23.4, min: 23.1, max: 23.9, last: 23.6 },
       humidity_pct: { avg: null, min: null, max: null, last: null },
       gas_raw: { avg: 312, min: 298, max: 355, last: 305 },
+      magnetic_raw: { avg: 514, min: 509, max: 760, last: 512 },
       motion_count: 2,
       ir_count: 3,
       rssi_dbm: -61,

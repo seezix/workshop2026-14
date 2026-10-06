@@ -24,6 +24,8 @@ export const TelemetryMessage = z.object({
   temperature_c: stat(real),
   humidity_pct: stat(real),
   gas_raw: stat(raw),
+  // Capteur à effet Hall OH49E, valeur brute de l'ADC.
+  magnetic_raw: stat(raw),
   motion_count: z.number().int().min(0).max(32767).default(0),
   ir_count: z.number().int().min(0).max(32767).default(0),
   rssi_dbm: z.number().int().min(-150).max(0).nullable().optional(),
