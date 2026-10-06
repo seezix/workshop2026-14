@@ -37,6 +37,10 @@ npm run start:dev        # http://localhost:3000/api/v1
 
 Toutes les variables sont décrites dans [`.env.example`](.env.example). La config est validée au démarrage : une variable manquante ou invalide empêche le lancement.
 
+## Documentation de l'API
+
+Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-json`). Les corps, paramètres et droits d'accès affichés sont tirés des schémas zod des `ZodPipe` et des décorateurs `@Access` (`src/common/openapi.ts`) : rien à maintenir à la main, hormis le résumé `@ApiOperation` de chaque route. Les réponses ne sont pas décrites. Désactivé quand `NODE_ENV=production`, sauf `SWAGGER_ENABLED=true`.
+
 ## Scripts
 
 | Commande | Rôle |
@@ -50,6 +54,7 @@ Toutes les variables sont décrites dans [`.env.example`](.env.example). La conf
 | `npm run db:roles` | Pose les mots de passe de `sentinel_app`, `sentinel_ia`, `sentinel_vision` depuis le `.env` |
 | `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin |
 | `npm run db:setup` | Les trois à la suite |
+| `npm run sim:esp` | Faux boîtier MQTT pour travailler sans matériel (`-- --auto` pour des détections aléatoires, voir `scripts/fake-esp.ts`) |
 
 ## Base de données
 

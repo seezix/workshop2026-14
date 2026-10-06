@@ -10,6 +10,7 @@ import {
   Res,
 } from '@nestjs/common';
 import { JwtModule, JwtService } from '@nestjs/jwt';
+import { ApiOperation } from '@nestjs/swagger';
 import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import type { Request, Response } from 'express';
@@ -89,6 +90,9 @@ export class AuthController {
     @Inject(ENV) private readonly env: Env,
   ) {}
 
+  @ApiOperation({
+    summary: 'Connexion : renvoie un JWT et pose le cookie httpOnly',
+  })
   @Post('login')
   @Public()
   @HttpCode(200)
@@ -115,6 +119,7 @@ export class AuthController {
     };
   }
 
+  @ApiOperation({ summary: 'Déconnexion : efface le cookie' })
   @Post('logout')
   @Public()
   @HttpCode(204)

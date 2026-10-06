@@ -1,4 +1,5 @@
 import { Controller, Get, Inject, Res } from '@nestjs/common';
+import { ApiOperation } from '@nestjs/swagger';
 import type { Response } from 'express';
 import pg from 'pg';
 import { Public } from '../auth/access.js';
@@ -13,6 +14,9 @@ export class HealthController {
     private readonly mqtt: MqttService,
   ) {}
 
+  @ApiOperation({
+    summary: "État de l'API, de la base et du broker (503 si dégradé)",
+  })
   @Get()
   @Public()
   async health(@Res({ passthrough: true }) res: Response) {

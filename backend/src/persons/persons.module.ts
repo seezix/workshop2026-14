@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { AuditService } from '../audit/audit.service.js';
 import { Access, CurrentPrincipal, type Principal } from '../auth/access.js';
 import { ApiError } from '../common/api-error.js';
+import { ApiOperation } from '@nestjs/swagger';
 import { ZodPipe, zUuid } from '../common/zod.pipe.js';
 import { ENV, type Env } from '../config/env.js';
 import { DB, type Database } from '../db/database.module.js';
@@ -296,11 +297,15 @@ export class PersonsService implements OnModuleInit, OnModuleDestroy {
 export class PersonsController {
   constructor(private readonly persons: PersonsService) {}
 
+  @ApiOperation({
+    summary: 'Liste des personnes connues de la reconnaissance faciale',
+  })
   @Get()
   list(@Query(new ZodPipe(ListQuery)) q: z.infer<typeof ListQuery>) {
     return this.persons.list(q.status, q.limit);
   }
 
+  @ApiOperation({ summary: "Passages d'une personne" })
   @Get(':id/sightings')
   sightings(
     @Param('id', new ZodPipe(zUuid)) id: string,
@@ -316,6 +321,9 @@ export class PersonsController {
     return this.persons.sightings(id, q.limit);
   }
 
+  @ApiOperation({
+    summary: 'Enregistre un visage par webcam (relayé à vision.py)',
+  })
   @Post('enroll')
   @Access({ role: 'admin' })
   @HttpCode(201)
@@ -327,6 +335,7 @@ export class PersonsController {
     return this.persons.enroll(body, principal, req.ip);
   }
 
+  @ApiOperation({ summary: "Modifie le nom ou le statut d'une personne" })
   @Patch(':id')
   @Access({ role: 'admin' })
   update(
@@ -338,6 +347,7 @@ export class PersonsController {
     return this.persons.update(id, body, principal, req.ip);
   }
 
+  @ApiOperation({ summary: 'Efface une personne et ses données (cascade)' })
   @Delete(':id')
   @Access({ role: 'admin' })
   @HttpCode(204)

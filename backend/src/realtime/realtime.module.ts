@@ -10,6 +10,7 @@ import {
   OnModuleInit,
   Sse,
 } from '@nestjs/common';
+import { ApiOperation, ApiProduces } from '@nestjs/swagger';
 import pg from 'pg';
 import { interval, map, merge, Observable } from 'rxjs';
 import { ENV, type Env } from '../config/env.js';
@@ -20,6 +21,8 @@ export class StreamController {
   constructor(private readonly realtime: RealtimeService) {}
 
   /** GET /api/v1/stream : rôle viewer (cookie httpOnly ou Bearer). */
+  @ApiOperation({ summary: 'Flux temps réel SSE (ping toutes les 25 s)' })
+  @ApiProduces('text/event-stream')
   @Sse()
   stream(): Observable<MessageEvent> {
     const events = this.realtime.events$.pipe(

@@ -30,6 +30,8 @@ const EnvSchema = z.object({
   MQTT_PASSWORD: z.string().optional(),
   MQTT_CA_FILE: z.string().optional(),
   MQTT_REJECT_UNAUTHORIZED: bool.default(true),
+  // Swagger UI sur /api/docs : actif par défaut hors production.
+  SWAGGER_ENABLED: bool.optional(),
   // Clés des services internes : "vision=xxx,anomaly=yyy".
   SERVICE_API_KEYS: z.string().default(''),
   // URL interne de vision.py pour l'enregistrement par webcam.

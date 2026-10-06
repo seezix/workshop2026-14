@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module.js';
+import { setupOpenApi } from './common/openapi.js';
 import { loadEnv } from './config/env.js';
 
 async function bootstrap() {
@@ -21,6 +22,7 @@ async function bootstrap() {
     origin: env.CORS_ORIGIN.split(',').map((o) => o.trim()),
     credentials: true,
   });
+  if (env.SWAGGER_ENABLED ?? env.NODE_ENV !== 'production') setupOpenApi(app);
   app.enableShutdownHooks();
 
   await app.listen(env.PORT);

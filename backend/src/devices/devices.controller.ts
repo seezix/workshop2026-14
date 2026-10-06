@@ -10,6 +10,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { ApiOperation } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { Access, CurrentPrincipal, type Principal } from '../auth/access.js';
@@ -104,16 +105,19 @@ export class DevicesController {
     private readonly commands: CommandsService,
   ) {}
 
+  @ApiOperation({ summary: 'Liste des boîtiers' })
   @Get()
   async list() {
     return (await this.devices.list()).map(toDeviceDto);
   }
 
+  @ApiOperation({ summary: "État d'un boîtier" })
   @Get(':id')
   async get(@Param('id', id) deviceId: string) {
     return toDeviceDto(await this.devices.get(deviceId));
   }
 
+  @ApiOperation({ summary: 'Modifie la config (publiée en retained sur MQTT)' })
   @Put(':id/config')
   @Access({ role: 'operator' })
   async updateConfig(
@@ -131,6 +135,7 @@ export class DevicesController {
     return toDeviceDto(device);
   }
 
+  @ApiOperation({ summary: 'Historique des mesures (24 h par défaut)' })
   @Get(':id/telemetry')
   @Access({ role: 'viewer', services: true })
   async history(
@@ -151,6 +156,7 @@ export class DevicesController {
     };
   }
 
+  @ApiOperation({ summary: 'Export CSV des mesures' })
   @Get(':id/telemetry/export')
   @Access({ role: 'viewer', services: true })
   async export(
@@ -171,6 +177,7 @@ export class DevicesController {
       .send(body);
   }
 
+  @ApiOperation({ summary: 'Statistiques sur une période' })
   @Get(':id/stats')
   async stats(
     @Param('id', id) deviceId: string,
@@ -180,6 +187,7 @@ export class DevicesController {
     return this.telemetry.stats(deviceId, q.period);
   }
 
+  @ApiOperation({ summary: 'Événements du boîtier' })
   @Get(':id/events')
   async events(
     @Param('id', id) deviceId: string,
@@ -189,6 +197,7 @@ export class DevicesController {
     return this.telemetry.events(deviceId, q.period, q.type, q.limit);
   }
 
+  @ApiOperation({ summary: "Scores d'anomalie" })
   @Get(':id/anomaly-scores')
   async anomalyScores(
     @Param('id', id) deviceId: string,
@@ -198,6 +207,7 @@ export class DevicesController {
     return this.telemetry.anomalyScores(deviceId, q.period, q.limit);
   }
 
+  @ApiOperation({ summary: 'Envoie une commande (buzzer, LED) au boîtier' })
   @Post(':id/commands')
   @Access({ role: 'operator' })
   @HttpCode(202)
@@ -217,6 +227,7 @@ export class DevicesController {
     return { cmd_id: command.id, status: command.status };
   }
 
+  @ApiOperation({ summary: 'Dernières commandes envoyées' })
   @Get(':id/commands')
   async listCommands(
     @Param('id', id) deviceId: string,

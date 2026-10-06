@@ -9,6 +9,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { ApiOperation } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { Access, CurrentPrincipal, type Principal } from '../auth/access.js';
@@ -63,6 +64,7 @@ const PatchBody = z
 export class AlertsController {
   constructor(private readonly alerts: AlertsService) {}
 
+  @ApiOperation({ summary: 'Liste des alertes, filtrable' })
   @Get()
   async list(@Query(new ZodPipe(ListQuery)) q: z.infer<typeof ListQuery>) {
     return (await this.alerts.list(q)).map(toAlertDto);
@@ -73,6 +75,9 @@ export class AlertsController {
    * 201 : nouvelle alerte ; 200 : doublon (occurrences + 1) ou détection
    * ignorée car le boîtier est désarmé.
    */
+  @ApiOperation({
+    summary: 'Crée une alerte (201), ou 200 si doublon ou boîtier désarmé',
+  })
   @Post()
   @Access({ services: true })
   @RateLimit({ limit: 10, windowMs: 1_000, by: 'principal' })
@@ -89,6 +94,7 @@ export class AlertsController {
     return toAlertDto(result.alert);
   }
 
+  @ApiOperation({ summary: 'Acquitte ou résout une alerte' })
   @Patch(':id')
   @Access({ role: 'operator' })
   async update(
