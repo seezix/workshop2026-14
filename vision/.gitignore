@@ -1,0 +1,18 @@
+# Secrets (mots de passe) : JAMAIS sur Git
+.env
+
+# Environnement Python et fichiers temporaires
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Modèles d'IA : téléchargés automatiquement au premier lancement
+models/
+*.pt
+*.onnx
+
+# Photos de visages (données biométriques, RGPD) et vidéos de test
+personnes_autorisees/
+*.mp4
+*.mov
