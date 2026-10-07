@@ -1,111 +1,84 @@
-:root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+@import 'tailwindcss';
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+/* Palette et typo du wireframe « Sentinel-X · Dashboard v0.1 ». */
+@theme {
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --color-ink: #1c1c1c;
+  --color-ink-2: #3a3a3a;
+  --color-muted: #5a5a5a;
+  --color-faint: #77776f;
+  --color-line: #cfcfcc;
+  --color-soft: #e4e4e0;
+  --color-hover: #efefec;
+  --color-selected: #ecece8;
+  --color-head: #fafaf8;
+  --color-page: #f5f5f4;
+  --color-ir: #a3a39e;
+}
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
+@layer base {
+  body {
+    margin: 0;
+    background: var(--color-page);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  a {
+    color: var(--color-ink);
+  }
+  a:hover {
+    color: #000;
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+@layer components {
+  .card {
+    @apply min-w-0 rounded-lg border border-line bg-white p-4;
   }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
+  .lbl {
+    @apply text-xs font-semibold tracking-wider text-muted uppercase;
   }
-}
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-}
-
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
+  .btn {
+    @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-ink bg-white px-4 text-sm font-medium text-ink no-underline hover:bg-hover hover:text-ink;
   }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
+  .btn-p {
+    @apply bg-ink text-white hover:bg-ink-2 hover:text-white;
   }
-}
-p {
-  margin: 0;
-}
-
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
-
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+  .btn:disabled {
+    @apply cursor-not-allowed border-line bg-page text-faint;
+  }
+  .pill {
+    @apply inline-flex h-[22px] items-center rounded-full px-[9px] text-xs font-semibold whitespace-nowrap;
+  }
+  .pill-critical {
+    @apply bg-ink text-white;
+  }
+  .pill-warning {
+    @apply border-[1.5px] border-ink bg-white text-ink;
+  }
+  .pill-info {
+    @apply bg-soft text-ink;
+  }
+  .nv {
+    @apply flex min-h-11 items-center justify-between rounded-md px-3 text-[15px] text-ink no-underline hover:bg-soft hover:text-ink;
+  }
+  .nv.active {
+    @apply bg-ink font-semibold text-white;
+  }
+  .fld {
+    @apply flex flex-col gap-1 text-[13px] text-muted;
+  }
+  .fld input,
+  .fld select {
+    @apply min-h-11 rounded-md border border-line bg-white px-2.5 text-sm text-ink;
+  }
+  .note {
+    @apply rounded-md border border-dashed border-line p-2.5 text-[13px] text-muted;
+  }
+  .row-sep {
+    @apply border-t border-soft;
+  }
 }
