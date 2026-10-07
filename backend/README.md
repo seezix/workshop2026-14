@@ -1,114 +1,99 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Sentinel-X : backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API NestJS + TypeScript. Seul composant qui écrit les données métier et qui parle à l'ESP (via Mosquitto).
+Référence : [`docs/GUIDELINES.md`](../docs/GUIDELINES.md) et [`docs/schema-bdd.puml`](../docs/schema-bdd.puml).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```
+ESP ──MQTT──▶ Mosquitto ──▶ IngestService ──▶ PostgreSQL + TimescaleDB
+                  ▲                │
+                  └── cmd / config ┤  AlertsService ──▶ RulesService (intrusion → buzzer + LED)
+                                   └─▶ RealtimeService ──SSE──▶ dashboard
+vision.py / service IA ── POST /alerts (X-Api-Key) ──┘
 ```
 
-## Compile and run the project
+## Démarrage en local
 
 ```bash
-# development
-$ npm run start
+cd backend
+npm install
 
-# watch mode
-$ npm run start:dev
+# Base TimescaleDB et broker de dev (le broker de prod est en TLS sur 8883)
+docker run -d --name sx-db -e POSTGRES_USER=sentinel -e POSTGRES_PASSWORD=sentinel \
+  -e POSTGRES_DB=sentinel -p 5432:5432 timescale/timescaledb:latest-pg16
+docker run -d --name sx-mq -p 1883:1883 eclipse-mosquitto:2 \
+  sh -c 'printf "listener 1883\nallow_anonymous true\n" > /m.conf && mosquitto -c /m.conf'
 
-# production mode
-$ npm run start:prod
+# Schéma, rôles Postgres, boîtiers SX-001 / SX-SIM et compte admin
+export DB_ADMIN_URL=postgres://sentinel:sentinel@localhost:5432/sentinel
+DB_APP_PASSWORD=dev-app-password-123 ADMIN_USERNAME=admin ADMIN_PASSWORD=admin-password-123 \
+  npm run db:setup
+
+# API
+export DATABASE_URL=postgres://sentinel_app:dev-app-password-123@localhost:5432/sentinel
+export JWT_SECRET=$(openssl rand -base64 48) COOKIE_SECURE=false MQTT_URL=mqtt://localhost:1883
+export SERVICE_API_KEYS=vision=$(openssl rand -hex 24)
+npm run start:dev        # http://localhost:3000/api/v1
 ```
 
-## Run tests
+Toutes les variables sont décrites dans [`.env.example`](.env.example). La config est validée au démarrage : une variable manquante ou invalide empêche le lancement.
 
-```bash
-# unit tests
-$ npm run test
+## Documentation de l'API
 
-# e2e tests
-$ npm run test:e2e
+Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-json`). Les corps, paramètres et droits d'accès affichés sont tirés des schémas zod des `ZodPipe` et des décorateurs `@Access` (`src/common/openapi.ts`) : rien à maintenir à la main, hormis le résumé `@ApiOperation` de chaque route. Les réponses ne sont pas décrites. Désactivé quand `NODE_ENV=production`, sauf `SWAGGER_ENABLED=true`.
 
-# test coverage
-$ npm run test:cov
-```
+## Scripts
 
-## Deployment
+| Commande | Rôle |
+|---|---|
+| `npm run start:dev` | API en mode watch |
+| `npm run build` / `start:prod` | Compilation / exécution de `dist/` |
+| `npm test` | Tests unitaires (vitest) |
+| `npm run test:e2e` | Tests de bout en bout, sautés si `E2E_DATABASE_URL` n'est pas défini |
+| `npm run lint` / `typecheck` / `format` | oxlint, tsc, prettier |
+| `npm run db:migrate` | Applique `db/migrations/*.sql` (compte propriétaire, `DB_ADMIN_URL`) |
+| `npm run db:roles` | Pose les mots de passe de `sentinel_app`, `sentinel_ia`, `sentinel_vision` depuis le `.env` |
+| `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin |
+| `npm run db:setup` | Les trois à la suite |
+| `npm run sim:esp` | Faux boîtier MQTT pour travailler sans matériel (`-- --auto` pour des détections aléatoires, voir `scripts/fake-esp.ts`) |
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Base de données
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- Source de vérité : le SQL de `db/migrations/` (tables, hypertables, agrégats `telemetry_1h` / `telemetry_1d`, compression 7 j, rétention 365 j, rôles). `src/db/schema.ts` en est le miroir Drizzle pour les requêtes typées.
+- Les migrations ne sont pas transactionnelles (TimescaleDB refuse de créer un agrégat continu dans une transaction) : une instruction par bloc `--> statement-breakpoint`.
+- Le backend se connecte avec `sentinel_app`, jamais avec le compte propriétaire.
+- Le service d'anomalies écrit directement dans `anomaly_scores` ; un trigger `NOTIFY anomaly_score` permet au backend de pousser `anomaly.score` en SSE.
+- Après l'insertion de l'historique simulé : `CALL refresh_continuous_aggregate('telemetry_1h', NULL, NULL);` (idem `_1d`).
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+## Organisation du code
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+| Dossier | Contenu |
+|---|---|
+| `config/` | Variables d'environnement validées par zod |
+| `db/` | Pool Postgres, client Drizzle, schéma |
+| `common/` | Format d'erreur unique, validation zod, limite de débit |
+| `auth/` | Login JWT (Bearer + cookie httpOnly), garde globale rôles / `X-Api-Key` |
+| `mqtt/` | Connexion au broker, ingestion (telemetry, events, status, cmd/ack), datation des messages ESP |
+| `devices/` | Routes `/devices/*` : état, config (publiée en retained), historique, stats, export, commandes |
+| `alerts/` | `POST /alerts` (point d'entrée unique, dédoublonnage 10 s, désarmement), filtres, acquittement |
+| `commands/` | Parcours d'une commande : `pending` → publication QoS 1 → `done` / `rejected` / `timeout` (5 s) |
+| `rules/` | Décisions du backend : `INTRUSION_CONFIRMED` (PIR + vision < 5 s) → buzzer + LED rouge si armé |
+| `persons/` | Reconnaissance faciale (sans empreintes), effacement en cascade, purge des inconnus après 72 h |
+| `realtime/` | Bus interne et flux `GET /stream` (SSE) |
+| `audit/` | Journal `audit_log` (connexions, échecs, actions sensibles) |
 
-## Observability
+## Contrat : choix faits dans cette version
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+- **Accès** : sans décorateur, une route demande un JWT `viewer`. `@Access({ role, services })` ouvre aux rôles supérieurs et/ou aux services (`X-Api-Key`, clé déclarée dans `SERVICE_API_KEYS`).
+- **`POST /alerts` boîtier désarmé** : les détections de présence (`MOTION_DETECTED`, `IR_DETECTED`, `PERSON_*`, `INTRUSION_CONFIRMED`) renvoient `200 { alert: null, suppressed: true }`. Gaz, sabotage, pannes, anomalies et hors ligne créent toujours une alerte.
+- **Doublon** : même `device_id` + `source` + `type`, non résolue, vue dans les 10 dernières secondes. La sévérité retenue est la plus haute.
+- **Commandes** : refusées (`409 DEVICE_OFFLINE`) vers un boîtier hors ligne ou simulé ; `503 SERVICE_UNAVAILABLE` si le broker est injoignable. Un ack arrivé après le timeout est quand même enregistré.
+- **Boîtier inconnu sur MQTT** : message ignoré (il faut d'abord ajouter une ligne dans `devices`).
+- **Datation** : à la réception ; les événements du tampon hors ligne sont recalés grâce à `uptime_ms` (voir `mqtt/device-clock.ts`).
+- **`POST /persons/enroll`** : relayé à `VISION_URL/enroll` (vision.py fait la capture et écrit la personne), `503` si non configuré.
+- Code d'erreur ajouté au contrat : `503 SERVICE_UNAVAILABLE`.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+## Reste à faire
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- `docker-compose.yml` à la racine (brique INFRA) : services `db`, `mosquitto`, `backend`, `nginx`, avec `npm run db:setup` au premier lancement.
+- `tools/fake-esp` pour générer l'historique de `SX-SIM`.
+- Le Dockerfile n'a pas pu être construit dans l'environnement de développement de cette PR (pas d'accès réseau pour `npm ci`) : à vérifier sur une machine de l'équipe.

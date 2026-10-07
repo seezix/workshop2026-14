@@ -1,0 +1,232 @@
+@startuml schema-bdd
+' Sentinel-X : modèle de données PostgreSQL + TimescaleDB (v0.4.1 : commands.issuer)
+' Architecture prête pour plusieurs boîtiers, un seul prototype construit
+' Télémétrie en résumés périodiques + événements immédiats + reconnaissance faciale
+' À placer dans docs/schema-bdd.puml
+
+!theme plain
+hide circle
+skinparam linetype ortho
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam roundCorner 8
+skinparam nodesep 55
+skinparam ranksep 65
+skinparam class {
+  BackgroundColor<<hypertable>> #E8F1FB
+  BorderColor<<hypertable>> #2F6FB3
+  BackgroundColor<<vue continue>> #F4F4F4
+  BorderColor<<vue continue>> #888888
+  BackgroundColor<<biométrie>> #FDF1E7
+  BorderColor<<biométrie>> #C2410C
+  BackgroundColor<<référentiel>> #EEF7EE
+  BorderColor<<référentiel>> #2E7D32
+}
+
+title Sentinel-X : modèle de données v0.4 (multi-boîtiers)
+
+package "Référentiel" {
+  entity users {
+    * id : uuid <<PK>>
+    --
+    * username : text <<unique>>
+    * password_hash : text
+    * role : text {viewer, operator, admin}
+    * created_at : timestamptz
+    last_login_at : timestamptz
+  }
+
+  entity devices <<référentiel>> {
+    * id : text <<PK>> ('SX-001')
+    --
+    * name : text
+    location : text
+    * is_simulated : boolean
+    * status : text {online, offline}
+    fw_version : text
+    ip : inet
+    last_seen_at : timestamptz
+    .. configuration voulue ..
+    * interval_s : smallint (2 à 300)
+    * armed : boolean
+    * created_at : timestamptz
+  }
+}
+
+package "Séries temporelles (TimescaleDB)" {
+  entity telemetry <<hypertable>> {
+    * time : timestamptz
+    * device_id : text <<FK>>
+    --
+    seq : integer
+    uptime_ms : bigint
+    * interval_s : smallint
+    * samples : smallint
+    temp_avg / temp_min / temp_max / temp_last : real
+    hum_avg / hum_min / hum_max / hum_last : real
+    gas_avg / gas_min / gas_max / gas_last : smallint
+    mag_avg / mag_min / mag_max / mag_last : smallint
+    * motion_count : smallint
+    * ir_count : smallint
+    rssi_dbm : smallint
+    .. 1 résumé par intervalle (60 s par défaut) ..
+    .. compression 7 j, rétention 365 j ..
+  }
+
+  entity anomaly_scores <<hypertable>> {
+    * time : timestamptz
+    * device_id : text <<FK>>
+    --
+    * score : real
+    * is_anomaly : boolean
+    * model_version : text
+    features : jsonb
+  }
+
+  entity "telemetry_1h\ntelemetry_1d" as aggs <<vue continue>> {
+    * bucket : timestamptz
+    * device_id : text
+    --
+    temp / hum / gas / mag : avg pondéré, min, max
+    motion_count / ir_count : somme
+    samples : somme
+    .. recalculées par Timescale ..
+    .. jour calé sur Europe/Paris ..
+  }
+}
+
+package "Événements, alertes et actions" {
+  entity device_events {
+    * id : bigint <<PK>>
+    --
+    * time : timestamptz
+    * device_id : text <<FK>>
+    seq : integer
+    uptime_ms : bigint
+    * type : text
+    duration_ms : integer
+    * payload : jsonb
+    .. MOTION_DETECTED, IR_DETECTED, IR_CLEARED, ..
+    .. GAS_RISE, TAMPER, BOOT, SENSOR_FAILURE ..
+  }
+
+  entity alerts {
+    * id : uuid <<PK>>
+    --
+    * device_id : text <<FK>>
+    * source : text {esp, vision, ml, system}
+    * type : text
+    * severity : text {info, warning, critical}
+    * status : text {open, acknowledged, resolved}
+    message : text (140 max)
+    * details : jsonb
+    * occurrences : integer
+    * first_seen_at : timestamptz
+    * last_seen_at : timestamptz
+    acknowledged_by : uuid <<FK>>
+    acknowledged_at : timestamptz
+    resolved_at : timestamptz
+  }
+
+  entity commands {
+    * id : text <<PK>> (cmd_id)
+    --
+    * device_id : text <<FK>>
+    * action : text {BUZZER, LED}
+    * params : jsonb
+    * status : text {pending, done, rejected, timeout}
+    reason : text
+    * issuer : text {user, rule:*, service:*}
+    issued_by : uuid <<FK>>
+    * issued_at : timestamptz
+    acked_at : timestamptz
+    .. issued_by renseigné si issuer = user ..
+  }
+
+  entity audit_log {
+    * id : bigint <<PK>>
+    --
+    * time : timestamptz
+    user_id : uuid <<FK>>
+    * actor : text
+    * action : text
+    ip : inet
+    * details : jsonb
+  }
+}
+
+package "Reconnaissance faciale" {
+  entity persons <<biométrie>> {
+    * id : uuid <<PK>>
+    --
+    display_name : text
+    * status : text {authorized, unknown, denied}
+    consent_at : timestamptz
+    * first_seen_at : timestamptz
+    * last_seen_at : timestamptz
+    * visit_count : integer
+    expires_at : timestamptz
+    created_by : uuid <<FK>>
+    .. inconnus purgés après 72 h ..
+  }
+
+  entity face_embeddings <<biométrie>> {
+    * id : bigint <<PK>>
+    --
+    * person_id : uuid <<FK>>
+    * embedding : real[] (128)
+    * model_version : text
+    * source : text {enrollment, auto}
+    * created_at : timestamptz
+    .. jamais renvoyé par l'API ..
+  }
+
+  entity face_sightings {
+    * id : bigint <<PK>>
+    --
+    * time : timestamptz
+    * person_id : uuid <<FK>>
+    device_id : text <<FK>> (zone)
+    * similarity : real
+    * status_at_time : text
+    track_id : integer
+    alert_id : uuid <<FK>>
+    .. 1 ligne par apparition ..
+  }
+}
+
+' Boîtiers
+devices ||--o{ telemetry : "résume"
+devices ||--o{ anomaly_scores : "évalué"
+devices ||--o{ device_events : "signale"
+devices ||--o{ alerts : "concerne"
+devices ||--o{ commands : "reçoit"
+devices |o--o{ face_sightings : "zone"
+
+' Utilisateurs
+users |o--o{ alerts : "acquitte"
+users |o--o{ commands : "envoie"
+users |o--o{ audit_log : "trace"
+users |o--o{ persons : "enregistre"
+
+' Reconnaissance faciale
+persons ||--|{ face_embeddings : "a 1 à 5"
+persons ||--o{ face_sightings : "vue lors de"
+alerts |o--o{ face_sightings : "déclenchée par"
+
+telemetry ..> aggs : "agrégé automatiquement"
+
+note bottom of persons
+  Données biométriques (art. 9 RGPD) :
+  authorized = consentement obligatoire (consent_at),
+  suppression = ON DELETE CASCADE sur empreintes et passages.
+end note
+
+legend right
+  Point plein = NOT NULL
+  Un seul prototype (SX-001), schéma prêt pour N boîtiers.
+  SX-SIM = boîtier simulé pour l'historique de démo.
+  Vert : référentiel. Bleu : TimescaleDB. Orange : biométrie, accès restreint.
+endlegend
+
+@enduml
