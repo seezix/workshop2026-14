@@ -8,32 +8,22 @@ services:
       POSTGRES_DB: sentinel
     volumes:
       - db_data:/var/lib/postgresql/data
-    networks:
-      - app_network
-
-  sx-mq:
-    image: eclipse-mosquitto:1.6
-    restart: always
-    expose:
-      - "1883"
-    networks:
-      - app_network
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "3001:3000"
+      - "3001:3000" # Expose sur le 3001 (Grafana est sur le 3000)
     volumes:
       - ./backend:/app
-      - /app/node_modules
+      - /app/node_modules # Évite d'écraser les modules Linux avec ceux de votre machine
     env_file:
       - ./backend/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Permet de joindre le Mosquitto de l'hôte
     depends_on:
       - db
-    networks:
-      - app_network
 
   frontend:
     build:
@@ -48,12 +38,6 @@ services:
       - ./frontend/.env
     depends_on:
       - backend
-    networks:
-      - app_network
 
 volumes:
   db_data:
-
-networks:
-  app_network:
-    driver: bridge
