@@ -13,7 +13,10 @@ docs/      GUIDELINES.md (référence technique) et schema-bdd.puml (modèle de 
 ## Lancer en local
 
 ```bash
-# Backend (base, broker et variables d'environnement : voir backend/README.md)
+# Base TimescaleDB et broker de dev
+docker compose -f docker-compose.dev.yml up -d --wait
+
+# Backend (variables d'environnement : voir backend/README.md)
 cd backend
 npm install
 npm run db:setup

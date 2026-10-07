@@ -17,11 +17,9 @@ vision.py / service IA ── POST /alerts (X-Api-Key) ──┘
 cd backend
 npm install
 
-# Base TimescaleDB et broker de dev (le broker de prod est en TLS sur 8883)
-docker run -d --name sx-db -e POSTGRES_USER=sentinel -e POSTGRES_PASSWORD=sentinel \
-  -e POSTGRES_DB=sentinel -p 5432:5432 timescale/timescaledb:latest-pg16
-docker run -d --name sx-mq -p 1883:1883 eclipse-mosquitto:2 \
-  sh -c 'printf "listener 1883\nallow_anonymous true\n" > /m.conf && mosquitto -c /m.conf'
+# Base TimescaleDB et broker de dev (le broker de prod est en TLS sur 8883).
+# --wait rend la main quand les deux sont prêts ; les données restent dans un volume.
+docker compose -f ../docker-compose.dev.yml up -d --wait
 
 # Schéma, rôles Postgres, boîtiers SX-001 / SX-SIM et compte admin
 export DB_ADMIN_URL=postgres://sentinel:sentinel@localhost:5432/sentinel
@@ -36,6 +34,8 @@ npm run start:dev        # http://localhost:3000/api/v1
 ```
 
 Toutes les variables sont décrites dans [`.env.example`](.env.example). La config est validée au démarrage : une variable manquante ou invalide empêche le lancement.
+
+Arrêt : `docker compose -f ../docker-compose.dev.yml down` (ajouter `-v` pour repartir d'une base vide, puis relancer `npm run db:setup`). Si le port 5432 ou 1883 est déjà pris, définir `SX_DB_PORT` / `SX_MQTT_PORT` avant le `up` et reporter le port dans les URL ci-dessus.
 
 ## Documentation de l'API
 
@@ -94,6 +94,6 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 
 ## Reste à faire
 
-- `docker-compose.yml` à la racine (brique INFRA) : services `db`, `mosquitto`, `backend`, `nginx`, avec `npm run db:setup` au premier lancement.
+- `docker-compose.yml` à la racine (brique INFRA) : services `db`, `mosquitto`, `backend`, `nginx`, avec `npm run db:setup` au premier lancement. `docker-compose.dev.yml` ne couvre que la base et le broker de dev.
 - `tools/fake-esp` pour générer l'historique de `SX-SIM`.
 - Le Dockerfile n'a pas pu être construit dans l'environnement de développement de cette PR (pas d'accès réseau pour `npm ci`) : à vérifier sur une machine de l'équipe.
