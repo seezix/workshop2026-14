@@ -1,10 +1,11 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api, buildUrl, DEVICE_ID } from '../api/client'
 import type { AnomalyScore, Device, DeviceEvent, Measure, Resolution, Stats, TelemetryHistory, TelemetryPoint } from '../api/types'
 import { BAND, EChart, GRID_LINE, INK, MUTED, type ChartOption } from '../components/EChart'
 import { DownloadIcon, ErrorNote, PageTitle, Pill } from '../components/ui'
 import { TZ, fmt0, fmt1, pct } from '../lib/format'
 import { useApi } from '../lib/useApi'
+import { useStreamEvent } from '../live/stream'
 
 const RANGES = [
   { id: '24h', label: '24 h', days: 1 },
@@ -13,6 +14,9 @@ const RANGES = [
   { id: '90d', label: '90 j', days: 90 },
 ] as const
 type RangeId = (typeof RANGES)[number]['id'] | 'custom'
+
+/** Délai minimal entre deux rafraîchissements automatiques des graphiques. */
+const REFRESH_MS = 10_000
 
 const RESOLUTION_LABELS: Record<Resolution, string> = {
   raw: 'brut · telemetry',
@@ -105,8 +109,30 @@ export function HistoryPage() {
     from: toLocalInput(new Date(Date.now() - 2 * 86_400_000)),
     to: toLocalInput(new Date()),
   }))
-  // Fenêtre figée au choix de la période (évite de recharger à chaque rendu).
+  // Fenêtre figée au choix de la période (évite de recharger à chaque rendu),
+  // puis avancée quand le temps réel signale de nouvelles données.
   const [anchor, setAnchor] = useState(() => Date.now())
+  const stale = useRef(false)
+
+  const markStale = (e: { device_id: string }) => {
+    if (e.device_id === deviceId) stale.current = true
+  }
+  useStreamEvent('telemetry.new', markStale)
+  useStreamEvent('anomaly.score', markStale)
+  useStreamEvent('device_event.new', markStale)
+  useStreamEvent('alert.created', markStale)
+  useStreamEvent('alert.updated', markStale)
+
+  // Regroupe les événements : au plus un rechargement toutes les REFRESH_MS.
+  useEffect(() => {
+    if (rangeId === 'custom') return
+    const id = setInterval(() => {
+      if (!stale.current || document.hidden) return
+      stale.current = false
+      setAnchor(Date.now())
+    }, REFRESH_MS)
+    return () => clearInterval(id)
+  }, [rangeId])
 
   const period = useMemo(() => {
     if (rangeId === 'custom') return { from: new Date(custom.from), to: new Date(custom.to) }

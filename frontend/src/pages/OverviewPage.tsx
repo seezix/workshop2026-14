@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, DEVICE_ID, errorMessage } from '../api/client'
 import type { Alert, DeviceEvent, Measure } from '../api/types'
@@ -22,13 +22,10 @@ import { useCommands } from '../lib/useCommands'
 import { useLive } from '../live/context'
 import { useStreamEvent } from '../live/stream'
 
-function Kpi({ label, value, unit, detail, badge }: { label: string; value: string; unit?: string; detail: string; badge?: ReactNode }) {
+function Kpi({ label, value, unit, detail }: { label: string; value: string; unit?: string; detail: string }) {
   return (
     <div className="card flex flex-col gap-1.5 p-5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="lbl">{label}</span>
-        {badge}
-      </div>
+      <span className="lbl">{label}</span>
       <div className="text-[40px] leading-tight font-semibold">
         {value} {unit && <span className="text-lg font-normal">{unit}</span>}
       </div>
@@ -42,7 +39,7 @@ const range = (m: Measure | undefined, f: (v: number | null | undefined) => stri
 
 export function OverviewPage() {
   const { user, can } = useAuth()
-  const { device, telemetry, score, openAlerts, upsertAlert } = useLive()
+  const { device, telemetry, openAlerts, upsertAlert } = useLive()
   const now = useNow()
   const canOp = can('operator')
   const online = device?.status === 'online'
@@ -122,12 +119,6 @@ export function OverviewPage() {
           label="Capteur magnétique (brut)"
           value={fmt0(t?.magnetic_raw.last)}
           detail={t ? `pic ${fmt0(t.magnetic_raw.max)} sur la période` : 'aucune mesure'}
-        />
-        <Kpi
-          label="Score d'anomalie IA"
-          value={score ? score.score.toFixed(2).replace('.', ',') : '–'}
-          detail={score ? `modèle ${score.model_version ?? '?'} · ${fmtAgo(score.time, now)}` : 'aucun score reçu'}
-          badge={score && <Pill tone={score.is_anomaly ? 'critical' : 'info'}>{score.is_anomaly ? 'Anomalie' : 'Normal'}</Pill>}
         />
       </section>
 

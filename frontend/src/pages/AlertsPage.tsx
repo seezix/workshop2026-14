@@ -217,7 +217,11 @@ export function AlertsPage() {
           </div>
         </section>
 
-        <aside aria-label="Détail de l'alerte" className="card flex flex-[1_1_340px] flex-col gap-3.5">
+        {/* Collé en haut de l'écran : le détail reste visible quand on fait défiler une longue liste. */}
+        <aside
+          aria-label="Détail de l'alerte"
+          className="card sticky top-4 flex max-h-[calc(100vh-2rem)] flex-[1_1_340px] flex-col gap-3.5 overflow-y-auto"
+        >
           {!current ? (
             <Empty>Sélectionnez une alerte.</Empty>
           ) : (

@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { api, errorMessage } from '../api/client'
 import type { Alert, Person, PersonStatus, Severity, Sighting } from '../api/types'
 import { useAuth } from '../auth/context'
@@ -295,12 +295,16 @@ function EnrollForm({ onDone }: { onDone: (personId: string | null) => void }) {
   const [consent, setConsent] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [pendingName, setPendingName] = useState('')
+  const dialog = useRef<HTMLDialogElement>(null)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     const displayName = name.trim()
     setBusy(true)
     setMessage(null)
+    setPendingName(displayName)
+    dialog.current?.showModal()
     try {
       // La réponse n'arrive qu'à la fin de la capture (20 s au plus).
       const result = await api.post<EnrollResult>('/persons/enroll', { display_name: displayName, consent: true })
@@ -338,21 +342,45 @@ function EnrollForm({ onDone }: { onDone: (personId: string | null) => void }) {
       <button className="btn btn-p" disabled={!consent || !name.trim() || busy}>
         {busy ? 'Capture en cours…' : 'Lancer la capture'}
       </button>
-      {busy && (
-        <div className="flex flex-[1_1_100%] flex-col gap-2">
-          <p role="status" className="m-0 text-sm font-medium">
-            Capture en cours : regardez la caméra du boîtier et bougez légèrement la tête.
-          </p>
-          <div className="aspect-video w-full max-w-[480px] overflow-hidden rounded-md bg-soft">
-            <img src="/video/stream" alt="Flux de la caméra pendant l'enregistrement" className="h-full w-full object-cover" />
-          </div>
-        </div>
-      )}
       {message && !busy && (
-        <p role="status" className="m-0 flex-[1_1_100%] text-sm font-medium">
+        <p className="m-0 flex-[1_1_100%] text-sm font-medium">
           {message}
         </p>
       )}
+
+      {/* Fenêtre modale au centre de l'écran : le retour caméra est visible sans faire défiler. */}
+      <dialog
+        ref={dialog}
+        aria-label="Capture du visage"
+        onCancel={(e) => busy && e.preventDefault()}
+        className="m-auto w-[min(640px,calc(100vw-2rem))] rounded-lg border border-line bg-white p-5 text-ink backdrop:bg-ink/60"
+      >
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="m-0 text-lg font-semibold">Enregistrement de {pendingName}</h2>
+            {busy && <span className="pill pill-critical">Capture en cours</span>}
+          </div>
+          {busy ? (
+            <>
+              <p role="status" className="m-0 text-sm font-medium">
+                Regardez la caméra du boîtier et bougez légèrement la tête.
+              </p>
+              <div className="aspect-video w-full overflow-hidden rounded-md bg-soft">
+                <img src="/video/stream" alt="Flux de la caméra pendant l'enregistrement" className="h-full w-full object-cover" />
+              </div>
+            </>
+          ) : (
+            <p role="status" className="m-0 text-sm font-medium">
+              {message}
+            </p>
+          )}
+          <div className="flex justify-end">
+            <button type="button" className="btn" disabled={busy} onClick={() => dialog.current?.close()}>
+              Fermer
+            </button>
+          </div>
+        </div>
+      </dialog>
     </form>
   )
 }
