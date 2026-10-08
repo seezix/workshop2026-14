@@ -1,10 +1,11 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { api, errorMessage } from '../api/client'
-import type { Person, PersonStatus, Severity, Sighting } from '../api/types'
+import type { Alert, Person, PersonStatus, Severity, Sighting } from '../api/types'
 import { useAuth } from '../auth/context'
 import { Empty, ErrorNote, PageTitle, PersonIcon, Pill, ShieldIcon } from '../components/ui'
 import { fmtDateTime, fmtIn, fmtWhen, initials, personName } from '../lib/format'
 import { useApi } from '../lib/useApi'
+import { useStreamEvent } from '../live/stream'
 
 const TABS: { id: PersonStatus; label: string; hint: string }[] = [
   { id: 'unknown', label: 'Inconnus', hint: 'Empreinte seulement, aucune photo. Effacés automatiquement après 72 h.' },
@@ -41,6 +42,13 @@ export function PersonsPage() {
     () => (current ? api.get<Sighting[]>(`/persons/${current.id}/sightings`, { limit: 20 }) : Promise.resolve([])),
     [current?.id],
   )
+
+  // Une alerte vision = une personne créée ou revue : la liste se met à jour toute seule.
+  useStreamEvent<Alert>('alert.created', (a) => {
+    if (a.source !== 'vision') return
+    persons.reload()
+    sightings.reload()
+  })
 
   if (!can('operator')) {
     return (
@@ -196,7 +204,15 @@ export function PersonsPage() {
         </aside>
       </div>
 
-      {isAdmin && <EnrollForm onDone={persons.reload} />}
+      {isAdmin && (
+        <EnrollForm
+          onDone={(personId) => {
+            setTab('authorized')
+            setSelectedId(personId)
+            persons.reload()
+          }}
+        />
+      )}
     </>
   )
 }
@@ -268,7 +284,13 @@ function AdminActions({
   )
 }
 
-function EnrollForm({ onDone }: { onDone: () => void }) {
+interface EnrollResult {
+  person_id: string | null
+  status: 'authorized'
+  embeddings: number | null
+}
+
+function EnrollForm({ onDone }: { onDone: (personId: string | null) => void }) {
   const [name, setName] = useState('')
   const [consent, setConsent] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -276,14 +298,19 @@ function EnrollForm({ onDone }: { onDone: () => void }) {
 
   async function submit(e: FormEvent) {
     e.preventDefault()
+    const displayName = name.trim()
     setBusy(true)
     setMessage(null)
     try {
-      await api.post('/persons/enroll', { display_name: name.trim(), consent: true })
-      setMessage('Capture lancée : la personne doit rester face à la webcam.')
+      // La réponse n'arrive qu'à la fin de la capture (20 s au plus).
+      const result = await api.post<EnrollResult>('/persons/enroll', { display_name: displayName, consent: true })
+      const count = result.embeddings
+      setMessage(
+        count ? `${displayName} enregistré(e) avec ${count} empreinte${count > 1 ? 's' : ''}.` : `${displayName} enregistré(e).`,
+      )
       setName('')
       setConsent(false)
-      onDone()
+      onDone(result.person_id)
     } catch (err) {
       setMessage(errorMessage(err))
     } finally {
@@ -295,20 +322,33 @@ function EnrollForm({ onDone }: { onDone: () => void }) {
     <form onSubmit={submit} aria-label="Enregistrer une personne" className="card flex flex-wrap items-end gap-4">
       <div className="flex-[1_1_100%]">
         <h2 className="m-0 text-lg font-semibold">Enregistrer une personne autorisée</h2>
-        <div className="text-sm text-muted">La personne se place devant la webcam, vision.py capture plusieurs empreintes.</div>
+        <div className="text-sm text-muted">
+          La personne se place seule, de face, devant la caméra du boîtier. Cinq empreintes sont capturées en 20 secondes au plus ; aucune photo n'est
+          gardée.
+        </div>
       </div>
       <label className="fld flex-[1_1_240px]">
         Nom
-        <input required maxLength={64} placeholder="Prénom Nom" value={name} onChange={(e) => setName(e.target.value)} />
+        <input required maxLength={64} placeholder="Prénom Nom" value={name} disabled={busy} onChange={(e) => setName(e.target.value)} />
       </label>
       <label className="flex min-h-11 flex-[2_1_320px] items-center gap-2 text-sm">
-        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+        <input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />
         La personne a donné son accord (date enregistrée)
       </label>
       <button className="btn btn-p" disabled={!consent || !name.trim() || busy}>
-        Lancer la capture
+        {busy ? 'Capture en cours…' : 'Lancer la capture'}
       </button>
-      {message && (
+      {busy && (
+        <div className="flex flex-[1_1_100%] flex-col gap-2">
+          <p role="status" className="m-0 text-sm font-medium">
+            Capture en cours : regardez la caméra du boîtier et bougez légèrement la tête.
+          </p>
+          <div className="aspect-video w-full max-w-[480px] overflow-hidden rounded-md bg-soft">
+            <img src="/video/stream" alt="Flux de la caméra pendant l'enregistrement" className="h-full w-full object-cover" />
+          </div>
+        </div>
+      )}
+      {message && !busy && (
         <p role="status" className="m-0 flex-[1_1_100%] text-sm font-medium">
           {message}
         </p>

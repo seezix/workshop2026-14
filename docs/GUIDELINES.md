@@ -220,7 +220,7 @@ Appelé par le backend (événements ESP, boîtier hors ligne), vision.py et le 
 | `source` | `type` |
 |---|---|
 | `esp` | `MOTION_DETECTED`, `IR_DETECTED`, `GAS_RISE`, `SENSOR_FAILURE`, `TAMPER` |
-| `vision` | `PERSON_DETECTED`, `PERSON_UNKNOWN`, `PERSON_RETURNING`, `PERSON_DENIED` |
+| `vision` | `PERSON_DETECTED`, `PERSON_UNKNOWN`, `PERSON_RETURNING`, `PERSON_DENIED`, `UNIDENTIFIED` (animal ou objet en mouvement, hors règle d'intrusion) |
 | `ml` | `ANOMALY_DETECTED` |
 | `system` | `DEVICE_OFFLINE`, `INTRUSION_CONFIRMED` (PIR et vision d'accord dans les 5 s) |
 
@@ -295,6 +295,7 @@ Schéma de référence : `docs/schema-bdd.puml` (v0.4.1).
 | `devices` | Boîtiers, état et **configuration voulue** (`interval_s`, `armed`) |
 | `telemetry` (hypertable) | Un résumé par intervalle, une seule table pour tous les capteurs |
 | `anomaly_scores` (hypertable) | Scores du modèle IA, avec la version du modèle |
+| `model_reference_data` | Jeu de référence du modèle IA de prévision : mesures étiquetées, chargées à l'initialisation |
 | `device_events` | Détections et événements techniques |
 | `alerts` | Ce qui demande une action humaine |
 | `commands` | Commandes et leur accusé. `issuer` (obligatoire) dit qui l'a déclenchée (`user`, `rule:intrusion`...), `issued_by` (facultatif) pointe vers l'utilisateur quand il y en a un |
@@ -326,7 +327,7 @@ Principes :
 | Rôle | Droits |
 |---|---|
 | `sentinel_app` (backend) | Lecture et écriture sur les tables métier |
-| `sentinel_ia` (service d'anomalies) | Lecture des mesures et agrégats, écriture dans `anomaly_scores` uniquement |
+| `sentinel_ia` (service d'anomalies) | Lecture des mesures, des agrégats et de `model_reference_data`, écriture dans `anomaly_scores` uniquement |
 | `sentinel_vision` (vision.py) | Lecture de `persons` et `face_embeddings`, écriture dans `face_sightings`, création d'inconnus |
 
 Mots de passe : posés par script à partir du `.env`, jamais dans `init.sql`.
@@ -349,6 +350,8 @@ Mots de passe : posés par script à partir du `.env`, jamais dans `init.sql`.
 | Inconnu, 1er passage | `PERSON_UNKNOWN`, `warning` |
 | Inconnu qui revient | `PERSON_RETURNING`, `critical` |
 | `denied` reconnu | `PERSON_DENIED`, `critical` |
+| Personne sans visage exploitable | `PERSON_DETECTED`, `warning` |
+| Animal ou objet en mouvement (non identifié) | `UNIDENTIFIED`, `warning` |
 
 ---
 

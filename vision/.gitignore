@@ -16,3 +16,4 @@ models/
 personnes_autorisees/
 *.mp4
 *.mov
+.pytest_cache/

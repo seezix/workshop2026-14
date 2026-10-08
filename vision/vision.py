@@ -1,15 +1,19 @@
 """
-SENTINEL-X - Module Vision (filière IA) - v4 : modèle de données v0.4
+SENTINEL-X - Module Vision (filière IA) - v5 : branché sur l'API et le dashboard
 - Lit la webcam USB
 - Détecte et SUIT les personnes et les animaux (YOLOv8n-seg + ByteTrack)
 - Reconnaît les visages (YuNet + SFace) grâce aux tables persons + face_embeddings
 - Repère les objets SEULEMENT s'ils bougent
-- Enregistre chaque apparition dans face_sightings
-- 3 cas :
+- Enregistre chaque apparition d'une personne identifiée dans face_sightings
+- 4 cas :
     * authorized   -> vert, son nom, pas d'alerte
     * unknown      -> rouge, PERSONNE INCONNUE, alerte (l'inconnu est mémorisé 72 h)
-    * unidentified -> orange, NON IDENTIFIE, alerte (pas de visage analysable)
-- Diffuse la vidéo annotée : http://<IP_DU_SERVEUR>:5001/video
+    * denied       -> rouge, PERSONNE REFUSEE, alerte critique
+    * unidentified -> orange, NON IDENTIFIE, alerte (pas de visage analysable,
+                      animal ou objet en mouvement)
+- Sert sur http://<IP_DU_SERVEUR>:5001 (VISION_PORT) :
+    * GET  /video/stream : vidéo annotée pour le dashboard
+    * POST /enroll       : enregistrement d'une personne, appelé par le backend
 
 Utilisation :
     python vision.py                                   (webcam)
@@ -18,23 +22,25 @@ Utilisation :
 """
 
 import argparse
+import hmac
 import os
 import queue
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
 from dotenv import load_dotenv
-from flask import Flask, Response
+from flask import Flask, Response, jsonify, request
 from ultralytics import YOLO
 
-from faces import (MODEL_VERSION, UNKNOWN_MAX_SCORE, FaceEngine, embedding_from_image,
-                   ensure_models, face_quality, from_db, to_db)
+from alerts import VisitLog, alert_kind, alert_to_send, build_payload, post_alert
+from enroll import ENROLL_TIMEOUT, Enroller, find_duplicate
+from faces import (MATCH_THRESHOLD, MODEL_VERSION, UNKNOWN_MAX_SCORE, FaceEngine,
+                   embedding_from_image, ensure_models, face_quality, from_db, to_db)
 
 load_dotenv()
 
@@ -49,6 +55,7 @@ ANIMAL_CONF_MIN = 0.6       # Confiance minimale pour accepter un ANIMAL (évite
 TRACK_CONF = 0.3            # Confiance donnée au suivi (plus bas = suivi plus stable)
 MIN_TRACK_FRAMES = 8        # Une détection doit durer 8 images avant de pouvoir alerter
 UNIDENTIFIED_DELAY = 3      # Secondes sans visage avant de dire NON IDENTIFIE
+UNIDENTIFIED_ALERT_COOLDOWN = 30  # Secondes minimum entre deux alertes "personne sans visage"
 OBJECT_ALERT_COOLDOWN = 30  # Secondes minimum entre deux alertes "objet qui bouge"
 UNKNOWN_CONFIRM = 5         # Nb d'analyses "clairement inconnu" avant de déclarer INCONNU
 AMBIGUOUS_WEIGHT = 0.25     # Une analyse "ressemble un peu à quelqu'un" compte pour 1/4
@@ -67,7 +74,7 @@ MOTION_MAX_RATIO = 0.4      # Si plus de 40 % de l'image change : c'est la lumi�
 BOX_MARGIN = 60             # Marge autour des animaux (et des personnes si pas de silhouette)
 SILHOUETTE_MARGIN = 15      # Marge autour de la silhouette d'une personne (pixels)
 
-STREAM_PORT = 5001
+STREAM_PORT = int(os.getenv("VISION_PORT", "5001"))   # flux vidéo + enregistrement
 SHOW_WINDOW = True
 
 # "database" (tables persons + face_embeddings) ou "folder" (test sans base)
@@ -77,8 +84,9 @@ RELOAD_INTERVAL = 60        # Recharge les visages toutes les 60 s
 # ===================================================================
 
 API_URL = os.getenv("API_URL", "http://192.168.10.1:3000/api/v1/alerts")
+API_KEY = os.getenv("API_KEY", "")      # Clé du service "vision" (SERVICE_API_KEYS du backend)
 API_BASE = API_URL.rsplit("/alerts", 1)[0]          # ex : http://.../api/v1
-API_HEADERS = {"X-Api-Key": os.getenv("API_KEY", "")}  # clé du service vision
+API_HEADERS = {"X-Api-Key": API_KEY}
 DEVICE_ID = os.getenv("DEVICE_ID", "SX-001")
 USE_DB = KNOWN_FACES_SOURCE == "database"
 
@@ -87,15 +95,18 @@ GREEN, RED, ORANGE, YELLOW = (0, 200, 0), (0, 0, 255), (0, 165, 255), (0, 255, 2
 STYLE = {
     "authorized": (GREEN, None),          # None = afficher le nom
     "unknown": (RED, "PERSONNE INCONNUE"),
+    "denied": (RED, "PERSONNE REFUSEE"),
     "unidentified": (ORANGE, "NON IDENTIFIE"),
     "analysing": (YELLOW, "ANALYSE..."),
 }
-PERSON_STATUSES = ("authorized", "unknown")
+PERSON_STATUSES = ("authorized", "unknown", "denied")
 
 latest_jpeg = None
 frame_lock = threading.Lock()
 known_faces = []            # Liste de {"person_id", "name", "status", "emb"}
 known_lock = threading.Lock()
+visits = VisitLog()         # Dernier passage de chaque personne (nouveau passage après 30 min)
+enroller = Enroller()       # Enregistrement en cours demandé par POST /enroll
 app = Flask(__name__)
 
 
@@ -118,7 +129,7 @@ def db_connect():
         host=os.getenv("DB_HOST", "localhost"),
         port=os.getenv("DB_PORT", "5432"),
         dbname=os.getenv("DB_NAME", "sentinel"),
-        user=os.getenv("DB_USER", "vision_service"),
+        user=os.getenv("DB_USER", "sentinel_vision"),
         password=os.getenv("DB_PASSWORD"),
         connect_timeout=5,
         autocommit=True,
@@ -187,15 +198,16 @@ db = DbWriter() if USE_DB else None
 # -------------------- Visages connus --------------------
 def load_from_database():
     query = (
-        "SELECT p.id, COALESCE(p.display_name, 'Inconnu'), p.status, e.embedding "
+        "SELECT p.id, COALESCE(p.display_name, 'Inconnu'), p.status, e.embedding, p.last_seen_at "
         "FROM persons p JOIN face_embeddings e ON e.person_id = p.id "
         "WHERE e.model_version = %s "
         "AND (p.status <> 'authorized' OR p.consent_at IS NOT NULL) "
         "AND (p.expires_at IS NULL OR p.expires_at > NOW())")
     with db_connect() as conn:
         rows = conn.execute(query, (MODEL_VERSION,)).fetchall()
-    return [{"person_id": pid, "name": name, "status": status, "emb": from_db(emb)}
-            for pid, name, status, emb in rows]
+    return [{"person_id": pid, "name": name, "status": status, "emb": from_db(emb),
+             "last_seen": seen.timestamp() if seen else None}
+            for pid, name, status, emb, seen in rows]
 
 
 def load_from_folder(engine):
@@ -225,6 +237,9 @@ def reload_known_faces():
         known = load_from_database() if USE_DB else load_from_folder(FaceEngine())
         with known_lock:
             known_faces = known
+        for k in known:
+            if k.get("last_seen") is not None:
+                visits.seed(person_key(k), k["last_seen"])
         people = len({k["person_id"] or k["name"] for k in known})
         if (people, len(known)) != _last_count:      # affiché seulement si ça change
             _last_count = (people, len(known))
@@ -240,42 +255,11 @@ def reload_loop():
 
 
 # -------------------- Alertes --------------------
-ALERT_RULES = {   # type -> (severity, message)
-    "unknown_person": ("critical", "Personne inconnue détectée"),
-    "unidentified": ("warning", "Présence non identifiée"),
-}
-
-
-def send_alert(alert_type, labels, keys, causes=None):
-    severity, message = ALERT_RULES[alert_type]
-    payload = {                       # Format de la table "alerts" (modèle v0.4)
-        "device_id": DEVICE_ID,
-        "source": "vision",
-        "type": alert_type,
-        "severity": severity,
-        "message": f"{message} ({len(labels)})"[:140],
-        "details": {
-            "count": len(labels),
-            "labels": labels,
-            "causes": causes or [],
-            "detected_at": datetime.now(timezone.utc).isoformat(),
-        },
-    }
-    try:
-        r = requests.post(API_URL, json=payload, timeout=2, verify=TLS_VERIFY,
-                          headers=API_HEADERS)
-        if r.status_code >= 400:
-            print(f"[ALERTE] Refusée par l'API ({r.status_code}) : {r.text[:200]}")
-            return
-        print(f"[ALERTE] Envoyée ({r.status_code}) : {alert_type} -> {', '.join(causes or labels)}")
-        try:
-            alert_id = r.json().get("id")
-        except ValueError:
-            alert_id = None
-        if alert_id and db and keys:
-            db.submit("alert_link", keys, alert_id)
-    except requests.RequestException as e:
-        print(f"[ALERTE] Échec de l'envoi : {e}")
+def send_alert(payload, key):
+    """Envoie l'alerte puis rattache son id au passage (face_sightings.alert_id)."""
+    alert_id = post_alert(payload, API_URL, API_KEY, TLS_VERIFY)
+    if alert_id and db and key:
+        db.submit("alert_link", [key], alert_id)
 
 
 # -------------------- Flux vidéo --------------------
@@ -291,8 +275,84 @@ def generate_stream():
 
 
 @app.route("/video")
+@app.route("/video/stream")     # chemin attendu par le dashboard (GUIDELINES §6.1)
 def video():
     return Response(generate_stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+# -------------------- Enregistrement (appelé par le backend) --------------------
+def save_enrolled_person(person_id, display_name, consent_at, created_by, embeddings):
+    """Crée la personne autorisée et ses empreintes (tout ou rien).
+    L'enregistrement compte comme premier passage : la personne est devant la caméra."""
+    with db_connect() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO persons (id, display_name, status, consent_at, created_by, "
+                "visit_count) VALUES (%s, %s, 'authorized', %s, %s, 1)",
+                (person_id, display_name, consent_at, created_by))
+            for emb in embeddings:
+                conn.execute(
+                    "INSERT INTO face_embeddings (person_id, embedding, model_version, source) "
+                    "VALUES (%s, %s, %s, 'enrollment')",
+                    (person_id, to_db(emb), MODEL_VERSION))
+
+
+def refuse(status, message):
+    return jsonify({"message": message}), status
+
+
+@app.route("/enroll", methods=["POST"])
+def enroll():
+    # Sans cette clé, n'importe qui sur le réseau pourrait s'ajouter comme personne autorisée
+    if not API_KEY:
+        return refuse(503, "API_KEY absent du .env de vision.py")
+    given = request.headers.get("X-Api-Key", "")
+    if not hmac.compare_digest(given.encode(), API_KEY.encode()):
+        return refuse(401, "Clé de service invalide")
+    if not USE_DB:
+        return refuse(503, "Enregistrement impossible sans base de données")
+
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("display_name") or "").strip()
+    if not name or len(name) > 64:
+        return refuse(422, "display_name obligatoire (64 caractères max)")
+    try:
+        consent_at = datetime.fromisoformat(str(body.get("consent_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return refuse(422, "consent_at obligatoire : la personne doit avoir donné son accord")
+
+    session = enroller.start(time.time())
+    if session is None:
+        return refuse(409, "Un enregistrement est déjà en cours")
+    try:
+        # La boucle vidéo remplit la session ; elle la termine à 5 empreintes ou après 20 s
+        session.done.wait(ENROLL_TIMEOUT + 5)
+        if not session.ok:
+            return refuse(422, "Aucun visage exploitable : une seule personne, de face, "
+                               "devant la caméra du boîtier")
+        with known_lock:
+            known = list(known_faces)
+        duplicate = find_duplicate(session.embeddings, known, MATCH_THRESHOLD)
+        if duplicate:
+            return refuse(409, f"Cette personne est déjà enregistrée : {duplicate}")
+
+        person_id = uuid.uuid4()
+        try:
+            save_enrolled_person(person_id, name, consent_at, body.get("created_by"),
+                                 session.embeddings)
+        except Exception as e:
+            print(f"[BASE] Erreur (enroll) : {e}")
+            return refuse(500, "Enregistrement impossible en base")
+        visits.seed(person_id, time.time())
+        with known_lock:
+            known_faces.extend({"person_id": person_id, "name": name,
+                                "status": "authorized", "emb": emb}
+                               for emb in session.embeddings)
+        print(f"[OK] {name} enregistré(e) avec {len(session.embeddings)} empreinte(s)")
+        return jsonify({"person_id": str(person_id), "embeddings": len(session.embeddings)}), 201
+    finally:
+        # La boucle vidéo ne reprend l'identification qu'ici, une fois la personne connue
+        enroller.release(session)
 
 
 def run_server():
@@ -304,13 +364,13 @@ def new_track():
     return {"key": uuid.uuid4().hex, "status": None, "person_id": None, "name": None,
             "similarity": None, "unknown_hits": 0.0, "votes": {}, "verified_at": 0.0,
             "mismatches": 0, "recorded": None, "last_seen": 0.0, "debug": "",
-            "no_face_since": None, "frames": 0}
+            "no_face_since": None, "frames": 0, "alert_kind": None, "alerted": set()}
 
 
 def reset_identity(track):
     """Oublie l'identité (le suivi s'est trompé de personne)."""
     track.update(status=None, person_id=None, name=None, unknown_hits=0.0,
-                 votes={}, mismatches=0)
+                 votes={}, mismatches=0, alert_kind=None, alerted=set())
 
 
 def person_key(entry):
@@ -332,6 +392,7 @@ def classify_person(track, box, faces, engine, frame, now):
     # Déjà identifiée : on garde son nom grâce au suivi,
     # mais on re-vérifie régulièrement quand le visage est bien visible
     if track["status"] in PERSON_STATUSES:
+        visits.touch(track["person_id"] or track["name"], now)   # encore là : même passage
         if usable and now - track["verified_at"] > VERIFY_INTERVAL:
             track["verified_at"] = now
             with known_lock:
@@ -370,8 +431,12 @@ def classify_person(track, box, faces, engine, frame, now):
         if track["votes"][key] < RECOGNIZE_CONFIRM:
             return "analysing"
         track.update(status=match["status"], person_id=match["person_id"], name=match["name"])
-        if db and match["person_id"]:
-            db.submit("visit", match["person_id"], match["status"])
+        # Nouveau passage = pas vue depuis 30 min : on compte la visite, et on alerte
+        # pour un inconnu qui revient ou une personne refusée
+        if visits.touch(key, now):
+            track["alert_kind"] = alert_kind(match["status"], returning=True)
+            if db and match["person_id"]:
+                db.submit("visit", match["person_id"], match["status"])
         return track["status"]
 
     # Pas reconnu. Si le visage ressemble un peu à une personne autorisée,
@@ -386,7 +451,8 @@ def classify_person(track, box, faces, engine, frame, now):
     # Inconnu confirmé : on le mémorise pour le reconnaître s'il revient
     person_id = uuid.uuid4() if db else None
     name = f"Inconnu-{str(person_id)[:4]}" if person_id else "Inconnu"
-    track.update(status="unknown", person_id=person_id, name=name)
+    track.update(status="unknown", person_id=person_id, name=name, alert_kind="unknown")
+    visits.touch(person_id or name, now)
     if db:
         db.submit("new_unknown", person_id, name, emb)
         with known_lock:
@@ -436,9 +502,10 @@ def vision_loop():
         print(f"[INFO] Enregistrement du résultat dans : {SAVE_FILE}")
 
     print(f"[INFO] Vision démarrée (boîtier {DEVICE_ID}). "
-          f"Flux : http://localhost:{STREAM_PORT}/video")
+          f"Flux : http://localhost:{STREAM_PORT}/video/stream")
     tracks = {}
-    alerted = {}              # clé -> moment de l'alerte (une seule alerte par apparition)
+    last_unidentified_alert = 0.0
+    alerted_animals = {}      # animal suivi -> moment de l'alerte (une seule par apparition)
     animal_frames = {}        # animal suivi -> nombre d'images où il a été vu
     last_object_alert = 0.0
     motion_frames = 0
@@ -502,35 +569,51 @@ def vision_loop():
                 cv2.rectangle(person_mask, (x1, y1), (x2, y2), 255, -1)
 
         # 2. Personnes : reconnaissance faciale + mémoire du suivi
+        session = enroller.current()
+        enroll_text = None
+        if session:
+            # Enregistrement en cours : la caméra sert à la capture, on n'identifie personne
+            enroll_text = session.offer(face_engine.detect(frame), face_quality,
+                                        lambda f: face_engine.embedding(frame, f), now)
+            persons, tracks = [], {}
         faces = face_engine.detect(frame) if persons else []
-        detections = []   # (cadre, statut, texte, clé de suivi, cause, stable)
+        detections = []   # (cadre, statut, texte)
+        seen = []         # (suivi, statut, stable) des personnes de cette image
         for box, track_id in persons:
             track = tracks.setdefault(track_id, new_track()) if track_id is not None else new_track()
             track["last_seen"] = now
             track["frames"] += 1
             status = classify_person(track, box, faces, face_engine, frame, now)
 
-            # Une ligne face_sightings par apparition (mise à jour si le statut change)
+            # Une ligne face_sightings par apparition d'une personne identifiée
+            # (le schéma exige une personne et un score : rien pour "non identifié")
             stable = track["frames"] >= MIN_TRACK_FRAMES
-            if (db and track_id is not None and stable and status != "analysing"
-                    and status != track["recorded"]):
+            if (db and track_id is not None and stable and status in PERSON_STATUSES
+                    and track["person_id"] and status != track["recorded"]):
                 track["recorded"] = status
                 db.submit("sighting", track["key"], track["person_id"],
                           track["similarity"], status, track_id)
 
-            color, text = STYLE[status]
-            label = text or track["name"]
+            label = STYLE[status][1] or track["name"]
             if SHOW_SCORES and track["debug"]:
                 label = f"{label} [{track['debug']}]"
-            cause = "personne inconnue" if status == "unknown" else "personne sans visage visible"
-            detections.append((box, status, label, track["key"], cause, stable))
+            detections.append((box, status, label))
+            seen.append((track, status, stable))
 
-        # 3. Animaux : pas de visage analysable
+        # 3. Animaux : pas de visage analysable -> NON IDENTIFIE
+        new_animals = []          # causes des animaux à signaler dans cette image
         for box, track_id, name in animals:
-            key = f"animal-{track_id}" if track_id is not None else None
-            animal_frames[key] = animal_frames.get(key, 0) + 1
-            stable = key is not None and animal_frames[key] >= MIN_TRACK_FRAMES
-            detections.append((box, "unidentified", "NON IDENTIFIE", key, f"animal ({name})", stable))
+            detections.append((box, "unidentified", "NON IDENTIFIE"))
+            if track_id is None:
+                continue
+            animal_frames[track_id] = animal_frames.get(track_id, 0) + 1
+            # Une détection trop courte (quelques images) est souvent une fausse détection
+            if animal_frames[track_id] >= MIN_TRACK_FRAMES and track_id not in alerted_animals:
+                alerted_animals[track_id] = now
+                new_animals.append(f"animal ({name})")
+        current = {t for _, t, _ in animals if t is not None}
+        animal_frames = {k: v for k, v in animal_frames.items() if k in current}
+        alerted_animals = {k: t for k, t in alerted_animals.items() if now - t < 600}
 
         # 4. Objets qui bougent (hors personnes et animaux)
         gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0)
@@ -561,54 +644,50 @@ def vision_loop():
                     moving_objects.append((x, y, x + w, y + h))
                 motion_frames = motion_frames + 1 if moving_objects else 0
         # Un objet n'est signalé que s'il bouge plusieurs images de suite
-        if motion_frames >= MOTION_PERSIST:
+        object_seen = motion_frames >= MOTION_PERSIST and bool(moving_objects)
+        if object_seen:
             for box in moving_objects:
-                detections.append((box, "unidentified", "NON IDENTIFIE", None,
-                                   "objet en mouvement", True))
+                detections.append((box, "unidentified", "NON IDENTIFIE"))
 
         tracks = {k: v for k, v in tracks.items() if now - v["last_seen"] < TRACK_TIMEOUT}
         ms = (time.perf_counter() - t0) * 1000
 
         # 5. Dessin
-        for (x1, y1, x2, y2), status, text, *_ in detections:
+        for (x1, y1, x2, y2), status, text in detections:
             if status == "analysing":
                 continue          # pendant l'analyse : aucun cadre
             color = STYLE[status][0]
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, text, (x1, max(y1 - 8, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        if enroll_text:
+            cv2.putText(frame, enroll_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 2)
 
         times.append(ms)
         times = times[-30:]
         avg_ms = sum(times) / len(times)
 
-        # 6. Alertes : UNE seule par apparition (personne ou animal suivi),
-        #    et au plus une toutes les 30 s pour les objets qui bougent
-        new_alerts = {"unknown_person": [], "unidentified": []}
-        object_seen = False
-        for _, status, label, key, cause, stable in detections:
-            # Une détection trop courte (quelques images) est souvent une fausse détection
-            if status not in ("unknown", "unidentified") or not stable:
-                continue
-            alert_type = "unknown_person" if status == "unknown" else "unidentified"
-            if key is None:
-                object_seen = True
-            elif (key, status) not in alerted:
-                alerted[(key, status)] = now
-                new_alerts[alert_type].append((label, key, cause))
+        # 6. Alertes : une seule par apparition et par cas.
+        #    Animaux et objets : alerte UNIDENTIFIED (hors règle d'intrusion du backend),
+        #    une par animal suivi, au plus une toutes les 30 s pour les objets qui bougent.
+        causes = list(new_animals)
         if object_seen and now - last_object_alert > OBJECT_ALERT_COOLDOWN:
             last_object_alert = now
-            new_alerts["unidentified"].append(("NON IDENTIFIE", None, "objet en mouvement"))
-        for alert_type, items in new_alerts.items():
-            if items:
-                labels = [label for label, _, _ in items]
-                keys = [key for _, key, _ in items if key and not key.startswith("animal-")]
-                causes = [cause for _, _, cause in items]
-                threading.Thread(target=send_alert, args=(alert_type, labels, keys, causes),
-                                 daemon=True).start()
-        animal_frames = {k: v for k, v in animal_frames.items()
-                         if any(d[3] == k for d in detections)}
-        alerted = {k: t for k, t in alerted.items() if now - t < 600}
+            causes.append("objet en mouvement")
+        if causes:
+            payload = build_payload("other", DEVICE_ID, cause=", ".join(causes))
+            threading.Thread(target=send_alert, args=(payload, None), daemon=True).start()
+        for track, status, stable in seen:
+            kind = alert_to_send(status, track["alert_kind"], track["alerted"], stable)
+            if kind is None:
+                continue
+            if kind == "unidentified":
+                if now - last_unidentified_alert < UNIDENTIFIED_ALERT_COOLDOWN:
+                    continue
+                last_unidentified_alert = now
+            track["alerted"].add(kind)
+            payload = build_payload(kind, DEVICE_ID, track["person_id"], track["similarity"])
+            threading.Thread(target=send_alert, args=(payload, track["key"]), daemon=True).start()
 
         if writer:
             writer.write(frame)
