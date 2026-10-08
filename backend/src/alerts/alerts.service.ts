@@ -24,7 +24,9 @@ export const ALERT_TYPES: Record<AlertSource, readonly string[]> = {
     'PERSON_UNKNOWN',
     'PERSON_RETURNING',
     'PERSON_DENIED',
-    'UNIDENTIFIED',
+    // Format d'origine du module vision : inconnu et présence non identifiée
+    'unknown_person',
+    'unidentified',
   ],
   ml: ['ANOMALY_DETECTED'],
   system: ['DEVICE_OFFLINE', 'INTRUSION_CONFIRMED'],
@@ -42,7 +44,8 @@ const PRESENCE_TYPES = new Set([
   'PERSON_UNKNOWN',
   'PERSON_RETURNING',
   'PERSON_DENIED',
-  'UNIDENTIFIED',
+  'unknown_person',
+  'unidentified',
   'INTRUSION_CONFIRMED',
 ]);
 

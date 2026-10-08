@@ -1,8 +1,10 @@
 """
-SENTINEL-X - Alertes envoyées à l'API (GUIDELINES §6.2 et §8)
+SENTINEL-X - Alertes envoyées à l'API
 - L'IA détecte, le backend décide : vision.py n'envoie que des alertes
-- Types autorisés pour la source "vision" : PERSON_DETECTED, PERSON_UNKNOWN,
-  PERSON_RETURNING, PERSON_DENIED, UNIDENTIFIED (animal ou objet en mouvement)
+- 2 types (format d'origine du module vision) :
+    * unknown_person -> personne inconnue (critical)
+    * unidentified   -> présence non identifiée : personne sans visage visible,
+                        animal ou objet en mouvement (warning)
 """
 
 from datetime import datetime, timezone
@@ -11,60 +13,28 @@ import requests
 
 VISIT_GAP = 30 * 60     # Secondes sans voir quelqu'un avant de compter un nouveau passage
 
-ALERT_RULES = {   # cas -> (type, severity, message)
-    "unknown": ("PERSON_UNKNOWN", "warning", "Personne inconnue dans la zone"),
-    "returning": ("PERSON_RETURNING", "critical", "Inconnu déjà vu de retour dans la zone"),
-    "denied": ("PERSON_DENIED", "critical", "Personne refusée reconnue"),
-    "unidentified": ("PERSON_DETECTED", "warning", "Personne sans visage identifiable"),
-    # Hors personnes : ne compte pas pour la règle d'intrusion du backend
-    "other": ("UNIDENTIFIED", "warning", "Présence non identifiée"),
+ALERT_RULES = {   # type -> (severity, message)
+    "unknown_person": ("critical", "Personne inconnue détectée"),
+    "unidentified": ("warning", "Présence non identifiée"),
 }
 
 
-def alert_kind(status, returning=False):
-    """Cas d'alerte (clé de ALERT_RULES) pour un statut, None si aucune alerte.
-    returning = True : la personne était déjà mémorisée et revient."""
-    if status == "unknown":
-        return "returning" if returning else "unknown"
-    return status if status in ALERT_RULES else None
-
-
-def alert_to_send(status, identified_kind, alerted, stable):
-    """Cas d'alerte à envoyer maintenant pour une personne suivie, sinon None.
-    - status : statut affiché (authorized, unknown, denied, unidentified, analysing)
-    - identified_kind : cas décidé à l'identification (None = aucune alerte à envoyer)
-    - alerted : cas déjà envoyés pour cette apparition
-    - stable : la détection dure depuis assez d'images (sinon, souvent une fausse détection)"""
-    if not stable:
-        return None
-    if status == "unidentified":
-        kind = "unidentified"
-    elif status in ("unknown", "denied"):
-        kind = identified_kind
-    else:
-        kind = None
-    return None if kind is None or kind in alerted else kind
-
-
-def build_payload(kind, device_id, person_id=None, similarity=None, now=None, cause=None):
-    """Corps de POST /api/v1/alerts."""
-    alert_type, severity, message = ALERT_RULES[kind]
-    details = {}
-    if cause:
-        details["cause"] = cause            # ex : "animal (cat)", "objet en mouvement"
-    if person_id is not None:
-        details["person_id"] = str(person_id)
-    if similarity is not None:
-        details["confidence"] = round(float(similarity), 3)
+def build_payload(alert_type, device_id, labels, causes=None, now=None):
+    """Corps de POST /api/v1/alerts : les détections d'une même image sont regroupées."""
+    severity, message = ALERT_RULES[alert_type]
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return {
         "device_id": device_id,
         "source": "vision",
         "type": alert_type,
         "severity": severity,
-        "occurred_at": moment.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "message": message,
-        "details": details,
+        "message": f"{message} ({len(labels)})"[:140],
+        "details": {
+            "count": len(labels),
+            "labels": labels,
+            "causes": causes or [],
+            "detected_at": moment.isoformat(),
+        },
     }
 
 
@@ -86,7 +56,8 @@ def post_alert(payload, api_url, api_key, verify=True, timeout=2):
     if body.get("suppressed"):      # boîtier désarmé : trace gardée, pas d'alerte
         print(f"[ALERTE] Ignorée par l'API ({body.get('reason')}) : {payload['type']}")
         return None
-    print(f"[ALERTE] Envoyée ({r.status_code}) : {payload['type']}")
+    causes = payload.get("details", {}).get("causes") or payload.get("details", {}).get("labels", [])
+    print(f"[ALERTE] Envoyée ({r.status_code}) : {payload['type']} -> {', '.join(causes)}")
     return body.get("id")
 
 

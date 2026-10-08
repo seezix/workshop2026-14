@@ -220,7 +220,7 @@ Appelé par le backend (événements ESP, boîtier hors ligne), vision.py et le 
 | `source` | `type` |
 |---|---|
 | `esp` | `MOTION_DETECTED`, `IR_DETECTED`, `GAS_RISE`, `SENSOR_FAILURE`, `TAMPER` |
-| `vision` | `PERSON_DETECTED`, `PERSON_UNKNOWN`, `PERSON_RETURNING`, `PERSON_DENIED`, `UNIDENTIFIED` (animal ou objet en mouvement, hors règle d'intrusion) |
+| `vision` | `PERSON_DETECTED`, `PERSON_UNKNOWN`, `PERSON_RETURNING`, `PERSON_DENIED`, `unknown_person`, `unidentified` (envoyés par vision.py, hors règle d'intrusion) |
 | `ml` | `ANOMALY_DETECTED` |
 | `system` | `DEVICE_OFFLINE`, `INTRUSION_CONFIRMED` (PIR et vision d'accord dans les 5 s) |
 
@@ -346,12 +346,13 @@ Mots de passe : posés par script à partir du `.env`, jamais dans `init.sql`.
 
 | Cas | Alerte |
 |---|---|
-| `authorized` reconnu | Aucune (ligne dans `face_sightings`) |
-| Inconnu, 1er passage | `PERSON_UNKNOWN`, `warning` |
-| Inconnu qui revient | `PERSON_RETURNING`, `critical` |
-| `denied` reconnu | `PERSON_DENIED`, `critical` |
-| Personne sans visage exploitable | `PERSON_DETECTED`, `warning` |
-| Animal ou objet en mouvement (non identifié) | `UNIDENTIFIED`, `warning` |
+Alertes envoyées par `vision.py` (une par apparition, regroupées par image ; `details` = `count`, `labels`, `causes`, `detected_at`) :
+
+| Cas | Alerte |
+|---|---|
+| `authorized` ou `denied` reconnu | Aucune (ligne dans `face_sightings`) |
+| Inconnu | `unknown_person`, `critical` |
+| Personne sans visage visible, animal, objet en mouvement (30 s min entre deux) | `unidentified`, `warning` |
 
 ---
 

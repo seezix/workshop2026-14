@@ -8,7 +8,7 @@ SENTINEL-X - Module Vision (filière IA) - v5 : branché sur l'API et le dashboa
 - 4 cas :
     * authorized   -> vert, son nom, pas d'alerte
     * unknown      -> rouge, PERSONNE INCONNUE, alerte (l'inconnu est mémorisé 72 h)
-    * denied       -> rouge, PERSONNE REFUSEE, alerte critique
+    * denied       -> rouge, PERSONNE REFUSEE, pas d'alerte
     * unidentified -> orange, NON IDENTIFIE, alerte (pas de visage analysable,
                       animal ou objet en mouvement)
 - Sert sur http://<IP_DU_SERVEUR>:5001 (VISION_PORT) :
@@ -38,7 +38,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from ultralytics import YOLO
 
-from alerts import VisitLog, alert_kind, alert_to_send, build_payload, post_alert
+from alerts import VisitLog, build_payload, post_alert
 from enroll import ENROLL_TIMEOUT, Enroller, find_duplicate
 from faces import (MATCH_THRESHOLD, MODEL_VERSION, UNKNOWN_MAX_SCORE, FaceEngine,
                    embedding_from_image, ensure_models, face_quality, from_db, to_db)
@@ -56,7 +56,6 @@ ANIMAL_CONF_MIN = 0.6       # Confiance minimale pour accepter un ANIMAL (évite
 TRACK_CONF = 0.3            # Confiance donnée au suivi (plus bas = suivi plus stable)
 MIN_TRACK_FRAMES = 8        # Une détection doit durer 8 images avant de pouvoir alerter
 UNIDENTIFIED_DELAY = 3      # Secondes sans visage avant de dire NON IDENTIFIE
-UNIDENTIFIED_ALERT_COOLDOWN = 30  # Secondes minimum entre deux alertes "personne sans visage"
 OBJECT_ALERT_COOLDOWN = 30  # Secondes minimum entre deux alertes "objet qui bouge"
 UNKNOWN_CONFIRM = 5         # Nb d'analyses "clairement inconnu" avant de déclarer INCONNU
 AMBIGUOUS_WEIGHT = 0.25     # Une analyse "ressemble un peu à quelqu'un" compte pour 1/4
@@ -256,11 +255,12 @@ def reload_loop():
 
 
 # -------------------- Alertes --------------------
-def send_alert(payload, key):
-    """Envoie l'alerte puis rattache son id au passage (face_sightings.alert_id)."""
+def send_alert(alert_type, labels, keys, causes=None):
+    """Envoie l'alerte puis rattache son id aux passages (face_sightings.alert_id)."""
+    payload = build_payload(alert_type, DEVICE_ID, labels, causes)
     alert_id = post_alert(payload, API_URL, API_KEY, TLS_VERIFY)
-    if alert_id and db and key:
-        db.submit("alert_link", [key], alert_id)
+    if alert_id and db and keys:
+        db.submit("alert_link", keys, alert_id)
 
 
 # -------------------- Flux vidéo --------------------
@@ -365,13 +365,13 @@ def new_track():
     return {"key": uuid.uuid4().hex, "status": None, "person_id": None, "name": None,
             "similarity": None, "unknown_hits": 0.0, "votes": {}, "verified_at": 0.0,
             "mismatches": 0, "recorded": None, "last_seen": 0.0, "debug": "",
-            "no_face_since": None, "frames": 0, "alert_kind": None, "alerted": set()}
+            "no_face_since": None, "frames": 0}
 
 
 def reset_identity(track):
     """Oublie l'identité (le suivi s'est trompé de personne)."""
     track.update(status=None, person_id=None, name=None, unknown_hits=0.0,
-                 votes={}, mismatches=0, alert_kind=None, alerted=set())
+                 votes={}, mismatches=0)
 
 
 def person_key(entry):
@@ -432,12 +432,9 @@ def classify_person(track, box, faces, engine, frame, now):
         if track["votes"][key] < RECOGNIZE_CONFIRM:
             return "analysing"
         track.update(status=match["status"], person_id=match["person_id"], name=match["name"])
-        # Nouveau passage = pas vue depuis 30 min : on compte la visite, et on alerte
-        # pour un inconnu qui revient ou une personne refusée
-        if visits.touch(key, now):
-            track["alert_kind"] = alert_kind(match["status"], returning=True)
-            if db and match["person_id"]:
-                db.submit("visit", match["person_id"], match["status"])
+        # Nouveau passage = pas vue depuis 30 min : on compte la visite
+        if visits.touch(key, now) and db and match["person_id"]:
+            db.submit("visit", match["person_id"], match["status"])
         return track["status"]
 
     # Pas reconnu. Si le visage ressemble un peu à une personne autorisée,
@@ -452,7 +449,7 @@ def classify_person(track, box, faces, engine, frame, now):
     # Inconnu confirmé : on le mémorise pour le reconnaître s'il revient
     person_id = uuid.uuid4() if db else None
     name = f"Inconnu-{str(person_id)[:4]}" if person_id else "Inconnu"
-    track.update(status="unknown", person_id=person_id, name=name, alert_kind="unknown")
+    track.update(status="unknown", person_id=person_id, name=name)
     visits.touch(person_id or name, now)
     if db:
         db.submit("new_unknown", person_id, name, emb)
@@ -505,8 +502,7 @@ def vision_loop():
     print(f"[INFO] Vision démarrée (boîtier {DEVICE_ID}). "
           f"Flux : http://localhost:{STREAM_PORT}/video/stream")
     tracks = {}
-    last_unidentified_alert = 0.0
-    alerted_animals = {}      # animal suivi -> moment de l'alerte (une seule par apparition)
+    alerted = {}              # clé -> moment de l'alerte (une seule alerte par apparition)
     animal_frames = {}        # animal suivi -> nombre d'images où il a été vu
     last_object_alert = 0.0
     motion_frames = 0
@@ -578,8 +574,7 @@ def vision_loop():
                                         lambda f: face_engine.embedding(frame, f), now)
             persons, tracks = [], {}
         faces = face_engine.detect(frame) if persons else []
-        detections = []   # (cadre, statut, texte)
-        seen = []         # (suivi, statut, stable) des personnes de cette image
+        detections = []   # (cadre, statut, texte, clé de suivi, cause, stable)
         for box, track_id in persons:
             track = tracks.setdefault(track_id, new_track()) if track_id is not None else new_track()
             track["last_seen"] = now
@@ -598,23 +593,15 @@ def vision_loop():
             label = STYLE[status][1] or track["name"]
             if SHOW_SCORES and track["debug"]:
                 label = f"{label} [{track['debug']}]"
-            detections.append((box, status, label))
-            seen.append((track, status, stable))
+            cause = "personne inconnue" if status == "unknown" else "personne sans visage visible"
+            detections.append((box, status, label, track["key"], cause, stable))
 
-        # 3. Animaux : pas de visage analysable -> NON IDENTIFIE
-        new_animals = []          # causes des animaux à signaler dans cette image
+        # 3. Animaux : pas de visage analysable
         for box, track_id, name in animals:
-            detections.append((box, "unidentified", "NON IDENTIFIE"))
-            if track_id is None:
-                continue
-            animal_frames[track_id] = animal_frames.get(track_id, 0) + 1
-            # Une détection trop courte (quelques images) est souvent une fausse détection
-            if animal_frames[track_id] >= MIN_TRACK_FRAMES and track_id not in alerted_animals:
-                alerted_animals[track_id] = now
-                new_animals.append(f"animal ({name})")
-        current = {t for _, t, _ in animals if t is not None}
-        animal_frames = {k: v for k, v in animal_frames.items() if k in current}
-        alerted_animals = {k: t for k, t in alerted_animals.items() if now - t < 600}
+            key = f"animal-{track_id}" if track_id is not None else None
+            animal_frames[key] = animal_frames.get(key, 0) + 1
+            stable = key is not None and animal_frames[key] >= MIN_TRACK_FRAMES
+            detections.append((box, "unidentified", "NON IDENTIFIE", key, f"animal ({name})", stable))
 
         # 4. Objets qui bougent (hors personnes et animaux)
         gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0)
@@ -645,16 +632,16 @@ def vision_loop():
                     moving_objects.append((x, y, x + w, y + h))
                 motion_frames = motion_frames + 1 if moving_objects else 0
         # Un objet n'est signalé que s'il bouge plusieurs images de suite
-        object_seen = motion_frames >= MOTION_PERSIST and bool(moving_objects)
-        if object_seen:
+        if motion_frames >= MOTION_PERSIST:
             for box in moving_objects:
-                detections.append((box, "unidentified", "NON IDENTIFIE"))
+                detections.append((box, "unidentified", "NON IDENTIFIE", None,
+                                   "objet en mouvement", True))
 
         tracks = {k: v for k, v in tracks.items() if now - v["last_seen"] < TRACK_TIMEOUT}
         ms = (time.perf_counter() - t0) * 1000
 
         # 5. Dessin
-        for (x1, y1, x2, y2), status, text in detections:
+        for (x1, y1, x2, y2), status, text, *_ in detections:
             if status == "analysing":
                 continue          # pendant l'analyse : aucun cadre
             color = STYLE[status][0]
@@ -668,27 +655,33 @@ def vision_loop():
         times = times[-30:]
         avg_ms = sum(times) / len(times)
 
-        # 6. Alertes : une seule par apparition et par cas.
-        #    Animaux et objets : alerte UNIDENTIFIED (hors règle d'intrusion du backend),
-        #    une par animal suivi, au plus une toutes les 30 s pour les objets qui bougent.
-        causes = list(new_animals)
+        # 6. Alertes : UNE seule par apparition (personne ou animal suivi),
+        #    et au plus une toutes les 30 s pour les objets qui bougent
+        new_alerts = {"unknown_person": [], "unidentified": []}
+        object_seen = False
+        for _, status, label, key, cause, stable in detections:
+            # Une détection trop courte (quelques images) est souvent une fausse détection
+            if status not in ("unknown", "unidentified") or not stable:
+                continue
+            alert_type = "unknown_person" if status == "unknown" else "unidentified"
+            if key is None:
+                object_seen = True
+            elif (key, status) not in alerted:
+                alerted[(key, status)] = now
+                new_alerts[alert_type].append((label, key, cause))
         if object_seen and now - last_object_alert > OBJECT_ALERT_COOLDOWN:
             last_object_alert = now
-            causes.append("objet en mouvement")
-        if causes:
-            payload = build_payload("other", DEVICE_ID, cause=", ".join(causes))
-            threading.Thread(target=send_alert, args=(payload, None), daemon=True).start()
-        for track, status, stable in seen:
-            kind = alert_to_send(status, track["alert_kind"], track["alerted"], stable)
-            if kind is None:
-                continue
-            if kind == "unidentified":
-                if now - last_unidentified_alert < UNIDENTIFIED_ALERT_COOLDOWN:
-                    continue
-                last_unidentified_alert = now
-            track["alerted"].add(kind)
-            payload = build_payload(kind, DEVICE_ID, track["person_id"], track["similarity"])
-            threading.Thread(target=send_alert, args=(payload, track["key"]), daemon=True).start()
+            new_alerts["unidentified"].append(("NON IDENTIFIE", None, "objet en mouvement"))
+        for alert_type, items in new_alerts.items():
+            if items:
+                labels = [label for label, _, _ in items]
+                keys = [key for _, key, _ in items if key and not key.startswith("animal-")]
+                causes = [cause for _, _, cause in items]
+                threading.Thread(target=send_alert, args=(alert_type, labels, keys, causes),
+                                 daemon=True).start()
+        animal_frames = {k: v for k, v in animal_frames.items()
+                         if any(d[3] == k for d in detections)}
+        alerted = {k: t for k, t in alerted.items() if now - t < 600}
 
         if writer:
             writer.write(frame)

@@ -3,10 +3,9 @@ from datetime import datetime, timezone
 import requests
 
 import alerts
-from alerts import ALERT_RULES, VisitLog, alert_kind, alert_to_send, build_payload, post_alert
+from alerts import ALERT_RULES, VisitLog, build_payload, post_alert
 
-BACKEND_TYPES = {"PERSON_DETECTED", "PERSON_UNKNOWN", "PERSON_RETURNING", "PERSON_DENIED",
-                 "UNIDENTIFIED"}
+BACKEND_TYPES = {"unknown_person", "unidentified"}
 
 
 class FakeResponse:
@@ -20,58 +19,36 @@ class FakeResponse:
 
 
 def test_rules_only_use_the_backend_contract():
-    assert {rule[0] for rule in ALERT_RULES.values()} == BACKEND_TYPES
-    assert {rule[1] for rule in ALERT_RULES.values()} <= {"info", "warning", "critical"}
-    assert all(len(rule[2]) <= 140 for rule in ALERT_RULES.values())
+    assert set(ALERT_RULES) == BACKEND_TYPES
+    assert ALERT_RULES["unknown_person"][0] == "critical"
+    assert ALERT_RULES["unidentified"][0] == "warning"
+    assert all(len(rule[1]) <= 140 for rule in ALERT_RULES.values())
 
 
-def test_alert_kind_follows_the_guidelines_table():
-    assert alert_kind("authorized") is None
-    assert alert_kind("analysing") is None
-    assert alert_kind("unknown") == "unknown"
-    assert alert_kind("unknown", returning=True) == "returning"
-    assert alert_kind("denied", returning=True) == "denied"
-    assert alert_kind("unidentified") == "unidentified"
-    assert ALERT_RULES["unknown"][:2] == ("PERSON_UNKNOWN", "warning")
-    assert ALERT_RULES["returning"][:2] == ("PERSON_RETURNING", "critical")
-    assert ALERT_RULES["denied"][:2] == ("PERSON_DENIED", "critical")
-    assert ALERT_RULES["unidentified"][:2] == ("PERSON_DETECTED", "warning")
-
-
-def test_alert_to_send_waits_for_a_stable_track():
-    assert alert_to_send("unknown", "unknown", set(), stable=False) is None
-    assert alert_to_send("unknown", "unknown", set(), stable=True) == "unknown"
-
-
-def test_alert_to_send_only_once_per_kind():
-    assert alert_to_send("unknown", "unknown", {"unknown"}, stable=True) is None
-    assert alert_to_send("unidentified", None, {"unknown"}, stable=True) == "unidentified"
-
-
-def test_alert_to_send_nothing_for_authorized_or_same_visit():
-    assert alert_to_send("authorized", None, set(), stable=True) is None
-    assert alert_to_send("analysing", "unknown", set(), stable=True) is None
-    assert alert_to_send("unknown", None, set(), stable=True) is None   # même passage
-
-
-def test_build_payload_matches_post_alerts_body():
-    now = datetime(2026, 10, 7, 14, 3, 12, 481000, tzinfo=timezone.utc)
-    payload = build_payload("denied", "SX-001", person_id="abc", similarity=0.87654, now=now)
+def test_build_payload_groups_the_detections_of_one_image():
+    now = datetime(2026, 10, 7, 14, 3, 12, tzinfo=timezone.utc)
+    payload = build_payload("unidentified", "SX-001", ["NON IDENTIFIE", "NON IDENTIFIE"],
+                            ["animal (cat)", "objet en mouvement"], now=now)
     assert payload == {
         "device_id": "SX-001",
         "source": "vision",
-        "type": "PERSON_DENIED",
-        "severity": "critical",
-        "occurred_at": "2026-10-07T14:03:12.481Z",
-        "message": ALERT_RULES["denied"][2],
-        "details": {"person_id": "abc", "confidence": 0.877},
+        "type": "unidentified",
+        "severity": "warning",
+        "message": "Présence non identifiée (2)",
+        "details": {
+            "count": 2,
+            "labels": ["NON IDENTIFIE", "NON IDENTIFIE"],
+            "causes": ["animal (cat)", "objet en mouvement"],
+            "detected_at": "2026-10-07T14:03:12+00:00",
+        },
     }
 
 
-def test_build_payload_without_person():
-    payload = build_payload("unidentified", "SX-001")
-    assert payload["type"] == "PERSON_DETECTED"
-    assert payload["details"] == {}
+def test_build_payload_unknown_person():
+    payload = build_payload("unknown_person", "SX-001", ["Inconnu-1a2b"], ["personne inconnue"])
+    assert payload["type"] == "unknown_person"
+    assert payload["severity"] == "critical"
+    assert payload["message"] == "Personne inconnue détectée (1)"
 
 
 def test_post_alert_sends_the_service_key(monkeypatch):
@@ -123,10 +100,3 @@ def test_visit_log_seed_does_not_overwrite_memory():
     assert visits.touch("ada", 1200) is False       # vue en base il y a 200 s
     visits.seed("ada", 0)                           # rechargement depuis la base
     assert visits.touch("ada", 1300) is False       # la mémoire garde 1200
-
-
-def test_animal_ou_objet_alerte_non_identifie_avec_sa_cause():
-    payload = build_payload("other", "SX-001", cause="animal (cat)")
-    assert payload["type"] == "UNIDENTIFIED"
-    assert payload["severity"] == "warning"
-    assert payload["details"] == {"cause": "animal (cat)"}
