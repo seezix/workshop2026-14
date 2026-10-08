@@ -58,7 +58,6 @@ VERIFY_INTERVAL = 2         # Re-vérifie le visage toutes les 2 s (évite les �
 CAMERA_RETRY_FRAMES = 30    # Images ratées avant de reconnecter la webcam
 TRACK_TIMEOUT = 10          # Secondes avant d'oublier une personne sortie du champ
 TRACKER_CONFIG = "sentinel_tracker.yaml" if Path("sentinel_tracker.yaml").exists() else "bytetrack.yaml"
-UNKNOWN_RETENTION_HOURS = 72  # Les inconnus sont effacés après 72 h
 
 ANIMAL_CLASSES = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]  # oiseau, chat, chien...
 MOTION_MIN_AREA = 800       # Taille minimale (pixels) d'un objet qui bouge (plus petit = voit plus loin)
@@ -78,6 +77,8 @@ RELOAD_INTERVAL = 60        # Recharge les visages toutes les 60 s
 # ===================================================================
 
 API_URL = os.getenv("API_URL", "http://192.168.10.1:3000/api/v1/alerts")
+API_BASE = API_URL.rsplit("/alerts", 1)[0]          # ex : http://.../api/v1
+API_HEADERS = {"X-Api-Key": os.getenv("API_KEY", "")}  # clé du service vision
 DEVICE_ID = os.getenv("DEVICE_ID", "SX-001")
 USE_DB = KNOWN_FACES_SOURCE == "database"
 
@@ -124,8 +125,18 @@ def db_connect():
     )
 
 
+def api_call(method, path, payload=None):
+    """Appel à l'API Sentinel-X avec la clé du service vision."""
+    r = requests.request(method, f"{API_BASE}{path}", json=payload, timeout=5,
+                         verify=TLS_VERIFY, headers=API_HEADERS)
+    if r.status_code >= 400:
+        raise RuntimeError(f"API {r.status_code} : {r.text[:200]}")
+    return r.json() if r.content else None
+
+
 class DbWriter:
-    """Écrit en base dans un thread à part, pour ne jamais bloquer la vidéo."""
+    """Enregistre les personnes vues via l'API, dans un thread à part,
+    pour ne jamais bloquer la vidéo. vision.py n'écrit plus en base directement."""
 
     def __init__(self):
         self.jobs = queue.Queue()
@@ -136,57 +147,38 @@ class DbWriter:
         self.jobs.put((job, args))
 
     def _run(self):
-        conn = None
         while True:
             job, args = self.jobs.get()
             try:
-                if conn is None or conn.closed:
-                    conn = db_connect()
-                getattr(self, "_" + job)(conn, *args)
+                getattr(self, "_" + job)(*args)
             except Exception as e:
-                print(f"[BASE] Erreur ({job}) : {e}")
-                conn = None
+                print(f"[API] Erreur ({job}) : {e}")
 
-    def _new_unknown(self, conn, person_id, name, emb):
-        conn.execute(
-            "INSERT INTO persons (id, display_name, status, first_seen_at, last_seen_at, "
-            "visit_count, expires_at) VALUES (%s, %s, 'unknown', NOW(), NOW(), 1, "
-            "NOW() + make_interval(hours => %s))",
-            (person_id, name, UNKNOWN_RETENTION_HOURS))
-        conn.execute(
-            "INSERT INTO face_embeddings (person_id, embedding, model_version, source) "
-            "VALUES (%s, %s, %s, 'auto')",
-            (person_id, to_db(emb), MODEL_VERSION))
+    def _new_unknown(self, person_id, name, emb):
+        api_call("POST", "/persons/unknowns", {
+            "id": str(person_id), "display_name": name,
+            "embedding": to_db(emb), "model_version": MODEL_VERSION})
 
-    def _visit(self, conn, person_id, status):
-        if status == "unknown":
-            conn.execute(
-                "UPDATE persons SET last_seen_at = NOW(), visit_count = visit_count + 1, "
-                "expires_at = NOW() + make_interval(hours => %s) WHERE id = %s",
-                (UNKNOWN_RETENTION_HOURS, person_id))
-        else:
-            conn.execute(
-                "UPDATE persons SET last_seen_at = NOW(), visit_count = visit_count + 1 "
-                "WHERE id = %s", (person_id,))
+    def _visit(self, person_id, status):
+        api_call("POST", f"/persons/{person_id}/visits")
 
-    def _sighting(self, conn, key, person_id, similarity, status, track_id):
+    def _sighting(self, key, person_id, similarity, status, track_id):
+        if person_id is None:
+            return          # le schéma exige une personne : pas de passage « non identifié »
+        payload = {"person_id": str(person_id), "similarity": float(similarity or 0.0),
+                   "status_at_time": status}
         if key in self.sightings:
-            conn.execute(
-                "UPDATE face_sightings SET person_id = %s, similarity = %s, "
-                "status_at_time = %s WHERE id = %s",
-                (person_id, similarity, status, self.sightings[key]))
+            api_call("PATCH", f"/persons/sightings/{self.sightings[key]}", payload)
         else:
-            row = conn.execute(
-                "INSERT INTO face_sightings (time, person_id, device_id, similarity, "
-                "status_at_time, track_id) VALUES (NOW(), %s, %s, %s, %s, %s) RETURNING id",
-                (person_id, DEVICE_ID, similarity, status, track_id)).fetchone()
-            self.sightings[key] = row[0]
+            row = api_call("POST", "/persons/sightings",
+                           {**payload, "device_id": DEVICE_ID, "track_id": track_id})
+            self.sightings[key] = row["id"]
 
-    def _alert_link(self, conn, keys, alert_id):
-        ids = [self.sightings[k] for k in keys if k in self.sightings]
-        if ids:
-            conn.execute("UPDATE face_sightings SET alert_id = %s WHERE id = ANY(%s)",
-                         (alert_id, ids))
+    def _alert_link(self, keys, alert_id):
+        for k in keys:
+            if k in self.sightings:
+                api_call("PATCH", f"/persons/sightings/{self.sightings[k]}",
+                         {"alert_id": alert_id})
 
 
 db = DbWriter() if USE_DB else None
@@ -270,7 +262,8 @@ def send_alert(alert_type, labels, keys, causes=None):
         },
     }
     try:
-        r = requests.post(API_URL, json=payload, timeout=2, verify=TLS_VERIFY)
+        r = requests.post(API_URL, json=payload, timeout=2, verify=TLS_VERIFY,
+                          headers=API_HEADERS)
         if r.status_code >= 400:
             print(f"[ALERTE] Refusée par l'API ({r.status_code}) : {r.text[:200]}")
             return
