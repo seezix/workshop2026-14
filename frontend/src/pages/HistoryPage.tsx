@@ -17,6 +17,8 @@ type RangeId = (typeof RANGES)[number]['id'] | 'custom'
 
 /** Délai minimal entre deux rafraîchissements automatiques des graphiques. */
 const REFRESH_MS = 10_000
+/** Rechargement même sans événement temps réel (agrégats, flux SSE coupé). */
+const FALLBACK_REFRESH_MS = 60_000
 
 const RESOLUTION_LABELS: Record<Resolution, string> = {
   raw: 'brut · telemetry',
@@ -52,12 +54,21 @@ const baseOption = (spanDays: number): ChartOption => ({
   yAxis: { type: 'value', scale: true, axisLabel: { color: MUTED }, splitLine: { lineStyle: { color: GRID_LINE } } },
 })
 
-/** Courbe moyenne + bande min / max (pile min, puis max - min). */
-function bandOption(points: TelemetryPoint[], pick: (p: TelemetryPoint) => Measure, name: string, spanDays: number): ChartOption {
+/** Courbe moyenne + bande min / max (pile min, puis max - min). Le survol donne le min et le max. */
+function bandOption(points: TelemetryPoint[], pick: (p: TelemetryPoint) => Measure, name: string, unit: string, spanDays: number): ChartOption {
   const t = (p: TelemetryPoint) => new Date(p.time).getTime()
   const valid = points.filter((p) => pick(p).min !== null && pick(p).max !== null)
   return {
     ...baseOption(spanDays),
+    tooltip: {
+      trigger: 'axis',
+      formatter: (items: { seriesName: string; data: [number, number | null, number | null, number | null] }[]) => {
+        const item = items.find((i) => i.seriesName === name)
+        if (!item) return ''
+        const [time, , min, max] = item.data
+        return `${new Date(time).toLocaleString('fr-FR', { timeZone: TZ })}<br/>min ${fmt1(min)} ${unit}<br/>max ${fmt1(max)} ${unit}`
+      },
+    },
     series: [
       { name: 'min', type: 'line', stack: 'band', symbol: 'none', lineStyle: { opacity: 0 }, data: valid.map((p) => [t(p), pick(p).min]), tooltip: { show: false } },
       {
@@ -70,7 +81,7 @@ function bandOption(points: TelemetryPoint[], pick: (p: TelemetryPoint) => Measu
         data: valid.map((p) => [t(p), (pick(p).max ?? 0) - (pick(p).min ?? 0)]),
         tooltip: { show: false },
       },
-      { name, type: 'line', symbol: 'none', lineStyle: { color: INK, width: 2 }, data: points.map((p) => [t(p), pick(p).avg]) },
+      { name, type: 'line', symbol: 'none', lineStyle: { color: INK, width: 2 }, data: points.map((p) => [t(p), pick(p).avg, pick(p).min, pick(p).max]) },
     ],
   }
 }
@@ -112,27 +123,33 @@ export function HistoryPage() {
   // Fenêtre figée au choix de la période (évite de recharger à chaque rendu),
   // puis avancée quand le temps réel signale de nouvelles données.
   const [anchor, setAnchor] = useState(() => Date.now())
+  const anchorRef = useRef(anchor)
   const stale = useRef(false)
+  const rolling = rangeId !== 'custom'
+  useEffect(() => {
+    anchorRef.current = anchor
+  })
 
   const markStale = (e: { device_id: string }) => {
     if (e.device_id === deviceId) stale.current = true
   }
-  useStreamEvent('telemetry.new', markStale)
   useStreamEvent('anomaly.score', markStale)
   useStreamEvent('device_event.new', markStale)
   useStreamEvent('alert.created', markStale)
   useStreamEvent('alert.updated', markStale)
 
-  // Regroupe les événements : au plus un rechargement toutes les REFRESH_MS.
+  // Regroupe les événements : au plus un rechargement toutes les REFRESH_MS,
+  // et au moins un toutes les FALLBACK_REFRESH_MS.
   useEffect(() => {
-    if (rangeId === 'custom') return
+    if (!rolling) return
     const id = setInterval(() => {
-      if (!stale.current || document.hidden) return
+      if (document.hidden) return
+      if (!stale.current && Date.now() - anchorRef.current < FALLBACK_REFRESH_MS) return
       stale.current = false
       setAnchor(Date.now())
     }, REFRESH_MS)
     return () => clearInterval(id)
-  }, [rangeId])
+  }, [rolling])
 
   const period = useMemo(() => {
     if (rangeId === 'custom') return { from: new Date(custom.from), to: new Date(custom.to) }
@@ -153,6 +170,21 @@ export function HistoryPage() {
   const stats = useApi(() => load<Stats>('/stats'), [key])
   const scores = useApi(() => load<AnomalyScore[]>('/anomaly-scores', { limit: 10_000 }), [key])
   const gasRises = useApi(() => load<DeviceEvent[]>('/events', { type: 'GAS_RISE', limit: 200 }), [key])
+
+  // Mesure reçue en direct : ajoutée tout de suite aux courbes brutes, sans attendre le rechargement.
+  useStreamEvent<TelemetryPoint>('telemetry.new', (t) => {
+    if (t.device_id !== deviceId) return
+    stale.current = true
+    if (!rolling || history.data?.resolution !== 'raw') return
+    const since = period.from.getTime()
+    history.setData(
+      (prev) =>
+        prev && {
+          ...prev,
+          points: [...prev.points.filter((p) => p.time !== t.time && new Date(p.time).getTime() >= since), t],
+        },
+    )
+  })
 
   const points = useMemo(() => history.data?.points ?? [], [history.data])
 
@@ -229,8 +261,8 @@ export function HistoryPage() {
     }
 
     return {
-      temperature: bandOption(points, (p) => p.temperature_c, 'moyenne', spanDays),
-      humidity: bandOption(points, (p) => p.humidity_pct, 'moyenne', spanDays),
+      temperature: bandOption(points, (p) => p.temperature_c, 'moyenne', '°C', spanDays),
+      humidity: bandOption(points, (p) => p.humidity_pct, 'moyenne', '%', spanDays),
       gas,
       score,
       detections,
@@ -328,10 +360,10 @@ export function HistoryPage() {
       </section>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(440px,100%),1fr))] gap-4">
-        <ChartCard title="Température" hint="moyenne pondérée + bande min / max">
+        <ChartCard title="Température" hint="moyenne pondérée + bande min / max (survol : min / max)">
           <EChart option={charts.temperature} label="Courbe de température" />
         </ChartCard>
-        <ChartCard title="Humidité" hint="moyenne + bande min / max">
+        <ChartCard title="Humidité" hint="moyenne + bande min / max (survol : min / max)">
           <EChart option={charts.humidity} label="Courbe d'humidité" />
         </ChartCard>
         <ChartCard title="Gaz MQ-2 (valeur brute)" hint="pics conservés via max">
