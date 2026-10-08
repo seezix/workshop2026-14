@@ -1,0 +1,51 @@
+# Sentinel-X : base et broker pour le développement local (API lancée hors Docker).
+# Ne pas déployer : broker en clair et sans authentification, identifiants de dev.
+# Le docker-compose.yml de production (TLS 8883, backend, nginx) reste la brique INFRA.
+#
+#   docker compose -f docker-compose.dev.yml up -d --wait
+#
+# Ports déjà pris sur la machine : SX_DB_PORT / SX_MQTT_PORT (variables d'environnement
+# ou .env à la racine), à reporter dans DATABASE_URL, DB_ADMIN_URL et MQTT_URL.
+name: sentinel-x-dev
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    ports:
+      # 127.0.0.1 : Docker contourne UFW (GUIDELINES §9)
+      - '127.0.0.1:${SX_DB_PORT:-5432}:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      # -h localhost : le serveur temporaire du premier démarrage n'écoute que sur le
+      # socket Unix, il ne doit pas être pris pour la base prête.
+      test: ['CMD', 'pg_isready', '-h', 'localhost', '-U', 'sentinel', '-d', 'sentinel']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - '127.0.0.1:${SX_MQTT_PORT:-1883}:1883'
+    configs:
+      - source: mosquitto_dev
+        target: /mosquitto/config/mosquitto.conf
+    healthcheck:
+      test: ['CMD', 'mosquitto_sub', '-t', '$$SYS/broker/version', '-C', '1', '-W', '3']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+configs:
+  mosquitto_dev:
+    content: |
+      listener 1883
+      allow_anonymous true
+
+volumes:
+  db_data:

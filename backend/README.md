@@ -17,11 +17,9 @@ vision.py / service IA ── POST /alerts (X-Api-Key) ──┘
 cd backend
 npm install
 
-# Base TimescaleDB et broker de dev (le broker de prod est en TLS sur 8883)
-docker run -d --name sx-db -e POSTGRES_USER=sentinel -e POSTGRES_PASSWORD=sentinel \
-  -e POSTGRES_DB=sentinel -p 5432:5432 timescale/timescaledb:latest-pg16
-docker run -d --name sx-mq -p 1883:1883 eclipse-mosquitto:2 \
-  sh -c 'printf "listener 1883\nallow_anonymous true\n" > /m.conf && mosquitto -c /m.conf'
+# Base TimescaleDB et broker de dev (le broker de prod est en TLS sur 8883).
+# --wait rend la main quand les deux sont prêts ; les données restent dans un volume.
+docker compose -f ../docker-compose.dev.yml up -d --wait
 
 # Schéma, rôles Postgres, boîtiers SX-001 / SX-SIM et compte admin
 export DB_ADMIN_URL=postgres://sentinel:sentinel@localhost:5432/sentinel
@@ -36,6 +34,8 @@ npm run start:dev        # http://localhost:3000/api/v1
 ```
 
 Toutes les variables sont décrites dans [`.env.example`](.env.example). La config est validée au démarrage : une variable manquante ou invalide empêche le lancement.
+
+Arrêt : `docker compose -f ../docker-compose.dev.yml down` (ajouter `-v` pour repartir d'une base vide, puis relancer `npm run db:setup`). Si le port 5432 ou 1883 est déjà pris, définir `SX_DB_PORT` / `SX_MQTT_PORT` avant le `up` et reporter le port dans les URL ci-dessus.
 
 ## Documentation de l'API
 
@@ -52,7 +52,7 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 | `npm run lint` / `typecheck` / `format` | oxlint, tsc, prettier |
 | `npm run db:migrate` | Applique `db/migrations/*.sql` (compte propriétaire, `DB_ADMIN_URL`) |
 | `npm run db:roles` | Pose les mots de passe de `sentinel_app`, `sentinel_ia`, `sentinel_vision` depuis le `.env` |
-| `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin |
+| `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin, jeu de référence du modèle IA |
 | `npm run db:setup` | Les trois à la suite |
 | `npm run sim:esp` | Faux boîtier MQTT pour travailler sans matériel (`-- --auto` pour des détections aléatoires, voir `scripts/fake-esp.ts`) |
 
@@ -62,6 +62,7 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 - Les migrations ne sont pas transactionnelles (TimescaleDB refuse de créer un agrégat continu dans une transaction) : une instruction par bloc `--> statement-breakpoint`.
 - Le backend se connecte avec `sentinel_app`, jamais avec le compte propriétaire.
 - Le service d'anomalies écrit directement dans `anomaly_scores` ; un trigger `NOTIFY anomaly_score` permet au backend de pousser `anomaly.score` en SSE.
+- `model_reference_data` : jeu de référence du modèle IA de prévision (345 600 mesures étiquetées, une toutes les 2 s). `npm run db:seed` le charge depuis `db/seeds/model_reference_data.csv.gz` si la table est vide ; `sentinel_ia` y a accès en lecture seule. Pour le recharger : `TRUNCATE model_reference_data;` puis `npm run db:seed`.
 - Après l'insertion de l'historique simulé : `CALL refresh_continuous_aggregate('telemetry_1h', NULL, NULL);` (idem `_1d`).
 
 ## Organisation du code
@@ -89,11 +90,11 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 - **Commandes** : refusées (`409 DEVICE_OFFLINE`) vers un boîtier hors ligne ou simulé ; `503 SERVICE_UNAVAILABLE` si le broker est injoignable. Un ack arrivé après le timeout est quand même enregistré.
 - **Boîtier inconnu sur MQTT** : message ignoré (il faut d'abord ajouter une ligne dans `devices`).
 - **Datation** : à la réception ; les événements du tampon hors ligne sont recalés grâce à `uptime_ms` (voir `mqtt/device-clock.ts`).
-- **`POST /persons/enroll`** : relayé à `VISION_URL/enroll` (vision.py fait la capture et écrit la personne), `503` si non configuré.
+- **`POST /persons/enroll`** : relayé à `VISION_URL/enroll` avec la clé du service `vision` en `X-Api-Key` (vision.py fait la capture et écrit la personne). `503` si `VISION_URL` ou la clé `vision` de `SERVICE_API_KEYS` manque. La réponse arrive à la fin de la capture (20 s au plus).
 - Code d'erreur ajouté au contrat : `503 SERVICE_UNAVAILABLE`.
 
 ## Reste à faire
 
-- `docker-compose.yml` à la racine (brique INFRA) : services `db`, `mosquitto`, `backend`, `nginx`, avec `npm run db:setup` au premier lancement.
+- `docker-compose.yml` à la racine (brique INFRA) : services `db`, `mosquitto`, `backend`, `nginx`, avec `npm run db:setup` au premier lancement. `docker-compose.dev.yml` ne couvre que la base et le broker de dev.
 - `tools/fake-esp` pour générer l'historique de `SX-SIM`.
 - Le Dockerfile n'a pas pu être construit dans l'environnement de développement de cette PR (pas d'accès réseau pour `npm ci`) : à vérifier sur une machine de l'équipe.

@@ -1,7 +1,9 @@
-// Données de départ : boîtiers SX-001 (réel) et SX-SIM (simulé), compte admin.
+// Données de départ : boîtiers SX-001 (réel) et SX-SIM (simulé), compte admin,
+// jeu de référence du modèle IA.
 // Idempotent : peut être relancé sans effet de bord.
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
+import { seedReferenceData } from './reference-data.js';
 
 async function main() {
   const url = process.env.DB_ADMIN_URL ?? process.env.DATABASE_URL;
@@ -38,6 +40,13 @@ async function main() {
         '- ADMIN_USERNAME / ADMIN_PASSWORD absents, pas de compte admin créé',
       );
     }
+
+    const inserted = await seedReferenceData(client);
+    console.log(
+      inserted === null
+        ? '- jeu de référence du modèle IA déjà présent'
+        : `- jeu de référence du modèle IA : ${inserted} lignes`,
+    );
   } finally {
     await client.end();
   }
