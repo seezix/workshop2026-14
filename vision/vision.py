@@ -31,8 +31,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+# Windows : sans ce réglage, certaines webcams mettent très longtemps à s'ouvrir
+# avec le pilote MSMF d'OpenCV (doit être posé avant d'importer cv2)
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 import cv2
 import numpy as np
+import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from ultralytics import YOLO
@@ -486,7 +491,12 @@ def vision_loop():
                                                     detectShadows=True)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
+    if not VIDEO_FILE:
+        print(f"[INFO] Ouverture de la webcam (CAMERA_INDEX={CAMERA_INDEX})...")
+    started = time.time()
     cap = open_camera()
+    if not VIDEO_FILE:
+        print(f"[INFO] Webcam ouverte en {time.time() - started:.1f} s")
     if not cap.isOpened():
         if VIDEO_FILE:
             print(f"[ERREUR] Impossible d'ouvrir la vidéo : {VIDEO_FILE}")
