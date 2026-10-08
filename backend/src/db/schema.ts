@@ -76,6 +76,25 @@ export const anomalyScores = pgTable('anomaly_scores', {
   features: jsonb('features'),
 });
 
+// Jeu figé chargé par db:seed, lu par le service IA.
+export const modelReferenceData = pgTable('model_reference_data', {
+  time: tz('time').primaryKey(),
+  temp: real('temp').notNull(),
+  hum: real('hum').notNull(),
+  hallState: boolean('hall_state').notNull(),
+  gas: smallint('gas').notNull(),
+  clusterId: smallint('cluster_id').notNull(),
+  label: text('label', {
+    enum: [
+      'Normal',
+      'Pluie',
+      'Fuite_De_Gaz',
+      'Incendie',
+      'Evenement_Magnetique',
+    ],
+  }).notNull(),
+});
+
 export const deviceEvents = pgTable('device_events', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
   time: tz('time').notNull(),

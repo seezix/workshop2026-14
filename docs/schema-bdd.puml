@@ -83,6 +83,19 @@ package "Séries temporelles (TimescaleDB)" {
     features : jsonb
   }
 
+  entity model_reference_data <<référentiel>> {
+    * time : timestamptz <<PK>>
+    --
+    * temp : real
+    * hum : real
+    * hall_state : boolean
+    * gas : smallint
+    * cluster_id : smallint
+    * label : text
+    .. jeu de référence du modèle IA de prévision ..
+    .. figé, chargé par db:seed (1 mesure / 2 s) ..
+  }
+
   entity "telemetry_1h\ntelemetry_1d" as aggs <<vue continue>> {
     * bucket : timestamptz
     * device_id : text

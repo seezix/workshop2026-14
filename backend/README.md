@@ -52,7 +52,7 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 | `npm run lint` / `typecheck` / `format` | oxlint, tsc, prettier |
 | `npm run db:migrate` | Applique `db/migrations/*.sql` (compte propriétaire, `DB_ADMIN_URL`) |
 | `npm run db:roles` | Pose les mots de passe de `sentinel_app`, `sentinel_ia`, `sentinel_vision` depuis le `.env` |
-| `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin |
+| `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin, jeu de référence du modèle IA |
 | `npm run db:setup` | Les trois à la suite |
 | `npm run sim:esp` | Faux boîtier MQTT pour travailler sans matériel (`-- --auto` pour des détections aléatoires, voir `scripts/fake-esp.ts`) |
 
@@ -62,6 +62,7 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 - Les migrations ne sont pas transactionnelles (TimescaleDB refuse de créer un agrégat continu dans une transaction) : une instruction par bloc `--> statement-breakpoint`.
 - Le backend se connecte avec `sentinel_app`, jamais avec le compte propriétaire.
 - Le service d'anomalies écrit directement dans `anomaly_scores` ; un trigger `NOTIFY anomaly_score` permet au backend de pousser `anomaly.score` en SSE.
+- `model_reference_data` : jeu de référence du modèle IA de prévision (345 600 mesures étiquetées, une toutes les 2 s). `npm run db:seed` le charge depuis `db/seeds/model_reference_data.csv.gz` si la table est vide ; `sentinel_ia` y a accès en lecture seule. Pour le recharger : `TRUNCATE model_reference_data;` puis `npm run db:seed`.
 - Après l'insertion de l'historique simulé : `CALL refresh_continuous_aggregate('telemetry_1h', NULL, NULL);` (idem `_1d`).
 
 ## Organisation du code
