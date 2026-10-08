@@ -6,7 +6,7 @@
 --   Timestamp           → time (pris en UTC)
 --   DHT22_Temperature_C → temp
 --   DHT22_Humidity_Pct  → hum
---   Hall_Sensor_State   → hall_state (1.0 = true, 0.0 = false)
+--   Hall_Sensor_State   → hall_state (entier, 1.0 → 1, 0.0 → 0)
 --   MQ2_AirQuality_ADC  → gas (valeur brute de l'ADC, comme telemetry.gas_*)
 --   cluster_id          → cluster_id
 --   Etat_Environnement  → label
@@ -15,7 +15,7 @@ CREATE TABLE model_reference_data (
   time       timestamptz PRIMARY KEY,
   temp       real NOT NULL,
   hum        real NOT NULL,
-  hall_state boolean NOT NULL,
+  hall_state smallint NOT NULL DEFAULT 1,
   gas        smallint NOT NULL,
   cluster_id smallint NOT NULL,
   label      text NOT NULL CHECK (label IN (

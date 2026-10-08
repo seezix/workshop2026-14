@@ -8,7 +8,7 @@ describe('parseReferenceLine', () => {
       time: '2026-06-01 00:00:00+00',
       temp: 19.6,
       hum: 65.7,
-      hallState: true,
+      hallState: 1,
       gas: 150,
       clusterId: 0,
       label: 'Normal',
@@ -19,7 +19,7 @@ describe('parseReferenceLine', () => {
     const row = parseReferenceLine(
       '20.1,60.2,0.0,152,3,2026-06-03 10:15:02,Evenement_Magnetique',
     );
-    expect(row.hallState).toBe(false);
+    expect(row.hallState).toBe(0);
     expect(row.clusterId).toBe(3);
   });
 
@@ -35,7 +35,7 @@ describe('parseReferenceLine', () => {
     ).toThrow(/DHT22_Temperature_C/);
   });
 
-  it('refuse un état Hall autre que 0 ou 1', () => {
+  it('refuse un état Hall non entier', () => {
     expect(() =>
       parseReferenceLine('19.6,65.7,0.5,150,0,2026-06-01 00:00:00,Normal'),
     ).toThrow(/Hall_Sensor_State/);

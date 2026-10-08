@@ -88,7 +88,7 @@ package "Séries temporelles (TimescaleDB)" {
     --
     * temp : real
     * hum : real
-    * hall_state : boolean
+    * hall_state : smallint = 1
     * gas : smallint
     * cluster_id : smallint
     * label : text

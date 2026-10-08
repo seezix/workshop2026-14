@@ -81,7 +81,7 @@ export const modelReferenceData = pgTable('model_reference_data', {
   time: tz('time').primaryKey(),
   temp: real('temp').notNull(),
   hum: real('hum').notNull(),
-  hallState: boolean('hall_state').notNull(),
+  hallState: smallint('hall_state').notNull().default(1),
   gas: smallint('gas').notNull(),
   clusterId: smallint('cluster_id').notNull(),
   label: text('label', {
