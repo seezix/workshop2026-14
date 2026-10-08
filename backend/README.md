@@ -90,7 +90,7 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 - **Commandes** : refusées (`409 DEVICE_OFFLINE`) vers un boîtier hors ligne ou simulé ; `503 SERVICE_UNAVAILABLE` si le broker est injoignable. Un ack arrivé après le timeout est quand même enregistré.
 - **Boîtier inconnu sur MQTT** : message ignoré (il faut d'abord ajouter une ligne dans `devices`).
 - **Datation** : à la réception ; les événements du tampon hors ligne sont recalés grâce à `uptime_ms` (voir `mqtt/device-clock.ts`).
-- **`POST /persons/enroll`** : relayé à `VISION_URL/enroll` (vision.py fait la capture et écrit la personne), `503` si non configuré.
+- **`POST /persons/enroll`** : relayé à `VISION_URL/enroll` avec la clé du service `vision` en `X-Api-Key` (vision.py fait la capture et écrit la personne). `503` si `VISION_URL` ou la clé `vision` de `SERVICE_API_KEYS` manque. La réponse arrive à la fin de la capture (20 s au plus).
 - Code d'erreur ajouté au contrat : `503 SERVICE_UNAVAILABLE`.
 
 ## Reste à faire

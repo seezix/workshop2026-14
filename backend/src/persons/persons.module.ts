@@ -24,7 +24,7 @@ import { Access, CurrentPrincipal, type Principal } from '../auth/access.js';
 import { ApiError } from '../common/api-error.js';
 import { ApiOperation } from '@nestjs/swagger';
 import { ZodPipe, zUuid } from '../common/zod.pipe.js';
-import { ENV, type Env } from '../config/env.js';
+import { ENV, type Env, parseServiceKeys } from '../config/env.js';
 import { DB, type Database } from '../db/database.module.js';
 import { faceSightings, persons } from '../db/schema.js';
 
@@ -226,13 +226,21 @@ export class PersonsService implements OnModuleInit, OnModuleDestroy {
     principal: Principal,
     ip?: string,
   ) {
-    if (!this.env.VISION_URL)
+    // vision.py n'accepte /enroll qu'avec sa propre clé de service : sans elle,
+    // n'importe qui sur le réseau pourrait s'ajouter comme personne autorisée.
+    const visionKey = [...parseServiceKeys(this.env.SERVICE_API_KEYS)].find(
+      ([, name]) => name === 'vision',
+    )?.[0];
+    if (!this.env.VISION_URL || !visionKey)
       throw new ApiError('SERVICE_UNAVAILABLE', 'Service vision non configuré');
     let res: globalThis.Response;
     try {
       res = await fetch(new URL('/enroll', this.env.VISION_URL), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': visionKey,
+        },
         body: JSON.stringify({
           display_name: body.display_name,
           consent_at: new Date().toISOString(),
@@ -267,7 +275,12 @@ export class PersonsService implements OnModuleInit, OnModuleDestroy {
           : 'Enregistrement refusé par vision',
       );
     }
-    return { person_id: payload.person_id ?? null, status: 'authorized' };
+    return {
+      person_id: payload.person_id ?? null,
+      status: 'authorized',
+      embeddings:
+        typeof payload.embeddings === 'number' ? payload.embeddings : null,
+    };
   }
 
   async purgeExpiredUnknowns() {
