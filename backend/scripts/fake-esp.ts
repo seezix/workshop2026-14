@@ -14,6 +14,9 @@
 //   anomalies d'environnement, visibles seulement dans les mesures (voir ANOMALIES) :
 //     g fuite de gaz, b incendie, p pluie, a aimant
 //   q quitter
+//
+// Broker en TLS : MQTT_URL=mqtts://localhost:6083 MQTT_CA_FILE=../infra/mosquitto/certs/ca.crt
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import mqtt from 'mqtt';
@@ -110,6 +113,9 @@ const client = mqtt.connect(MQTT_URL, {
   password: process.env.FAKE_ESP_PASSWORD,
   reconnectPeriod: 3_000,
   rejectUnauthorized: process.env.MQTT_REJECT_UNAUTHORIZED !== 'false',
+  ca: process.env.MQTT_CA_FILE
+    ? readFileSync(process.env.MQTT_CA_FILE)
+    : undefined,
   will: {
     topic: `${TOPIC}/status`,
     payload: JSON.stringify({ state: 'offline' }),

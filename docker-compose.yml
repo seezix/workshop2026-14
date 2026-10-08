@@ -8,15 +8,16 @@
 #
 # Dashboard : http://<IP du serveur>:6080 (compte admin : voir .env.example)
 # Ports publiés sur le serveur, tous entre 6000 et 6100 pour ne pas croiser les
-# ports habituels : 6080 dashboard + API, 6083 broker MQTT (à régler dans le
+# ports habituels : 6080 dashboard + API, 6083 broker MQTTS (TLS, à régler dans le
 # firmware de l'ESP), 6032 base (serveur seulement, pour vision.py). 6000 est
 # évité : les navigateurs le refusent (port X11).
 #
 # Les secrets (mots de passe, secret JWT, clés d'API) ne sont pas dans ce fichier :
 # ils viennent du fichier .env posé à côté, jamais commité (modèle : .env.example).
 # Sans lui, la commande s'arrête en nommant la variable manquante.
-# Reste à la brique INFRA (GUIDELINES §9) : TLS sur le broker (8883) et HTTPS (443) ;
-# ici le broker et le dashboard sont en clair.
+# Le broker n'accepte que MQTTS (TLS, 8883 dans le conteneur) : certificats dans
+# infra/mosquitto/certs/ (server.crt, server.key jamais commitée, ca.crt).
+# Reste à la brique INFRA (GUIDELINES §9) : HTTPS (443) ; ici le dashboard est en clair.
 name: sentinel-x
 
 x-backend-build: &backend-build
@@ -30,6 +31,16 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: '3'
+
+# Certificat de l'autorité qui a signé celui du broker : les clients MQTT le vérifient.
+# create_host_path: false : sans le fichier, « up » s'arrête au lieu de créer un dossier vide.
+x-mqtt-ca: &mqtt-ca
+  type: bind
+  source: ./infra/mosquitto/certs/ca.crt
+  target: /certs/ca.crt
+  read_only: true
+  bind:
+    create_host_path: false
 
 # vision.py tourne sur le serveur lui-même : nom par lequel les conteneurs le joignent.
 x-host-gateway: &host-gateway
@@ -64,14 +75,53 @@ services:
     <<: *logging
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    # Mosquitto lit ses certificats après être passé à l'utilisateur « mosquitto » :
+    # copiés pour lui dans un tmpfs, ils peuvent rester en 600 (root) sur le serveur.
+    command:
+      - sh
+      - -c
+      - >-
+        install -m 600 -o mosquitto -g mosquitto /certs/server.crt /certs/server.key /certs/ca.crt /mosquitto/certs/
+        && exec /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf
+    tmpfs:
+      - /mosquitto/certs
     ports:
-      # Joignable par l'ESP sur le réseau local. SX_MQTT_BIND=127.0.0.1 pour le fermer.
-      - '${SX_MQTT_BIND:-0.0.0.0}:${SX_MQTT_PORT:-6083}:1883'
+      # MQTTS seulement, joignable par l'ESP sur le réseau local.
+      # SX_MQTT_BIND=127.0.0.1 pour le fermer.
+      - '${SX_MQTT_BIND:-0.0.0.0}:${SX_MQTT_PORT:-6083}:8883'
     volumes:
       - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto_data:/mosquitto/data
+      - type: bind
+        source: ./infra/mosquitto/certs/server.crt
+        target: /certs/server.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./infra/mosquitto/certs/server.key
+        target: /certs/server.key
+        read_only: true
+        bind:
+          create_host_path: false
+      - *mqtt-ca
     healthcheck:
-      test: ['CMD', 'mosquitto_sub', '-t', '$$SYS/broker/version', '-C', '1', '-W', '3']
+      # Par TLS comme les clients : localhost figure dans le certificat du broker.
+      test:
+        - CMD
+        - mosquitto_sub
+        - -h
+        - localhost
+        - -p
+        - '8883'
+        - --cafile
+        - /mosquitto/certs/ca.crt
+        - -t
+        - $$SYS/broker/version
+        - -C
+        - '1'
+        - -W
+        - '3'
       interval: 2s
       timeout: 5s
       retries: 15
@@ -97,19 +147,22 @@ services:
     <<: [*logging, *backend-build, *host-gateway]
     restart: unless-stopped
     environment:
-      # « production » exige un broker en TLS (mqtts://) : à repasser en production
-      # avec MQTT_URL / MQTT_CA_FILE quand la brique INFRA fournit les certificats.
-      NODE_ENV: ${NODE_ENV:-development}
+      # « production » refuse un broker sans TLS (MQTT_URL doit être en mqtts://).
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
       DATABASE_URL: postgres://sentinel_app:${DB_APP_PASSWORD:?absent du fichier .env (voir .env.example)}@db:5432/sentinel
       JWT_SECRET: ${JWT_SECRET:?absent du fichier .env (voir .env.example)}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:6080}
       # Dashboard servi en HTTP : le cookie de session ne peut pas être « Secure ».
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      MQTT_URL: ${MQTT_URL:-mqtt://mosquitto:1883}
+      # « mosquitto » figure dans le certificat du broker : vérification complète.
+      MQTT_URL: ${MQTT_URL:-mqtts://mosquitto:8883}
+      MQTT_CA_FILE: /certs/ca.crt
       SERVICE_API_KEYS: vision=${VISION_API_KEY:?absent du fichier .env (voir .env.example)},anomaly=${ANOMALY_API_KEY:?absent du fichier .env (voir .env.example)}
       VISION_URL: ${VISION_URL:-http://host.docker.internal:5001}
       SWAGGER_ENABLED: ${SWAGGER_ENABLED:-true}
+    volumes:
+      - *mqtt-ca
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -155,7 +208,7 @@ services:
         condition: service_healthy
 
   # Faux boîtier SX-001, branché comme le vrai ESP : il passe par le réseau du serveur
-  # et le port publié du broker (6083), pas par le réseau interne des conteneurs.
+  # et le port publié du broker (6083, en TLS), pas par le réseau interne des conteneurs.
   # Il envoie des mesures normales, des détections (mouvement, IR) et, de temps en
   # temps, une anomalie d'environnement que seul le service de prévision signale.
   # Jamais en même temps que le vrai ESP.
@@ -182,7 +235,11 @@ services:
     # Garde l'entrée clavier ouverte (pas de tty : « echo g | docker attach » doit marcher)
     stdin_open: true
     environment:
-      MQTT_URL: mqtt://${SIM_MQTT_HOST:-localhost}:${SX_MQTT_PORT:-6083}
+      # SIM_MQTT_HOST doit figurer dans le certificat du broker (localhost par défaut).
+      MQTT_URL: mqtts://${SIM_MQTT_HOST:-localhost}:${SX_MQTT_PORT:-6083}
+      MQTT_CA_FILE: /certs/ca.crt
+    volumes:
+      - *mqtt-ca
     depends_on:
       backend:
         condition: service_healthy
