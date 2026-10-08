@@ -1,0 +1,192 @@
+# Sentinel-X : tout le projet en une commande.
+#
+#   docker compose up -d --build                      base, broker, API, dashboard, prévision
+#   docker compose --profile sim up -d --build        + faux boîtier SX-001 (démo sans ESP)
+#
+# vision.py reste hors Docker (accès direct à la webcam) : il se lance à la main sur
+# le serveur et rejoint la pile par les ports ci-dessous (voir README).
+#
+# Dashboard : http://<IP du serveur>:6080 (compte admin : voir .env.example)
+# Ports publiés sur le serveur, tous entre 6000 et 6100 pour ne pas croiser les
+# ports habituels : 6080 dashboard + API, 6083 broker MQTT (à régler dans le
+# firmware de l'ESP), 6032 base (serveur seulement, pour vision.py). 6000 est
+# évité : les navigateurs le refusent (port X11).
+#
+# Les secrets (mots de passe, secret JWT, clés d'API) ne sont pas dans ce fichier :
+# ils viennent du fichier .env posé à côté, jamais commité (modèle : .env.example).
+# Sans lui, la commande s'arrête en nommant la variable manquante.
+# Reste à la brique INFRA (GUIDELINES §9) : TLS sur le broker (8883) et HTTPS (443) ;
+# ici le broker et le dashboard sont en clair.
+name: sentinel-x
+
+x-backend-build: &backend-build
+  build:
+    context: ./backend
+
+# Journaux bornés : la prévision et le faux boîtier écrivent une ligne par mesure.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+# vision.py tourne sur le serveur lui-même : nom par lequel les conteneurs le joignent.
+x-host-gateway: &host-gateway
+  extra_hosts:
+    - 'host.docker.internal:host-gateway'
+
+services:
+  db:
+    <<: *logging
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sentinel
+      # Pris en compte à la création du volume seulement : pour le changer ensuite,
+      # ALTER ROLE sentinel ... ou repartir d'une base vide (docker compose down -v).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?absent du fichier .env (voir .env.example)}
+      POSTGRES_DB: sentinel
+    ports:
+      # Depuis le serveur seulement (127.0.0.1) : vision.py y lit les visages connus.
+      - '127.0.0.1:${SX_DB_PORT:-6032}:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      # -h localhost : le serveur temporaire du premier démarrage n'écoute que sur le
+      # socket Unix, il ne doit pas être pris pour la base prête.
+      test: ['CMD', 'pg_isready', '-h', 'localhost', '-U', 'sentinel', '-d', 'sentinel']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mosquitto:
+    <<: *logging
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      # Joignable par l'ESP sur le réseau local. SX_MQTT_BIND=127.0.0.1 pour le fermer.
+      - '${SX_MQTT_BIND:-0.0.0.0}:${SX_MQTT_PORT:-6083}:1883'
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+    healthcheck:
+      test: ['CMD', 'mosquitto_sub', '-t', '$$SYS/broker/version', '-C', '1', '-W', '3']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  # Migrations, mots de passe des rôles, boîtiers, compte admin, jeu de référence IA.
+  # Rejoué à chaque « up » (idempotent), avec le compte propriétaire que l'API n'a pas.
+  setup:
+    <<: [*logging, *backend-build]
+    command: ['npm', 'run', 'db:setup']
+    restart: 'no'
+    environment:
+      DB_ADMIN_URL: postgres://sentinel:${POSTGRES_PASSWORD:?absent du fichier .env (voir .env.example)}@db:5432/sentinel
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?absent du fichier .env (voir .env.example)}
+      DB_IA_PASSWORD: ${DB_IA_PASSWORD:?absent du fichier .env (voir .env.example)}
+      DB_VISION_PASSWORD: ${DB_VISION_PASSWORD:?absent du fichier .env (voir .env.example)}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?absent du fichier .env (voir .env.example)}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    <<: [*logging, *backend-build, *host-gateway]
+    restart: unless-stopped
+    environment:
+      # « production » exige un broker en TLS (mqtts://) : à repasser en production
+      # avec MQTT_URL / MQTT_CA_FILE quand la brique INFRA fournit les certificats.
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3000
+      DATABASE_URL: postgres://sentinel_app:${DB_APP_PASSWORD:?absent du fichier .env (voir .env.example)}@db:5432/sentinel
+      JWT_SECRET: ${JWT_SECRET:?absent du fichier .env (voir .env.example)}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:6080}
+      # Dashboard servi en HTTP : le cookie de session ne peut pas être « Secure ».
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      MQTT_URL: ${MQTT_URL:-mqtt://mosquitto:1883}
+      SERVICE_API_KEYS: vision=${VISION_API_KEY:?absent du fichier .env (voir .env.example)},anomaly=${ANOMALY_API_KEY:?absent du fichier .env (voir .env.example)}
+      VISION_URL: ${VISION_URL:-http://host.docker.internal:5001}
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-true}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:3000/api/v1/health']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # Dashboard (nginx) : sert le build React, relaie /api vers l'API et /video vers vision.py.
+  frontend:
+    <<: [*logging, *host-gateway]
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      VISION_UPSTREAM: ${VISION_UPSTREAM:-http://host.docker.internal:5001}
+    ports:
+      - '${SX_HTTP_PORT:-6080}:80'
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Service de prévision : compare les mesures au jeu de référence, POST /alerts (source ml).
+  forecast:
+    <<: *logging
+    build:
+      context: ./forecast
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://sentinel_ia:${DB_IA_PASSWORD:?absent du fichier .env (voir .env.example)}@db:5432/sentinel
+      API_URL: http://backend:3000/api/v1/alerts
+      API_KEY: ${ANOMALY_API_KEY:?absent du fichier .env (voir .env.example)}
+      INTERVALLE_S: ${INTERVALLE_S:-2}
+      MAG_REPOS: ${MAG_REPOS:-512}
+      MAG_SEUIL: ${MAG_SEUIL:-100}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Faux boîtier SX-001, branché comme le vrai ESP : il passe par le réseau du serveur
+  # et le port publié du broker (6083), pas par le réseau interne des conteneurs.
+  # Il envoie des mesures normales, des détections (mouvement, IR) et, de temps en
+  # temps, une anomalie d'environnement que seul le service de prévision signale.
+  # Jamais en même temps que le vrai ESP.
+  # Déclencher à la main : docker attach sentinel-x-fake-esp-1, puis une lettre et
+  # Entrée (g gaz, b incendie, p pluie, a aimant, m mouvement, i IR) ; Ctrl-P Ctrl-Q
+  # pour en sortir sans arrêter le boîtier.
+  fake-esp:
+    <<: [*logging, *backend-build]
+    profiles: ['sim']
+    command:
+      - node
+      - --import
+      - tsx
+      - scripts/fake-esp.ts
+      - --auto
+      - --interval
+      - '${SIM_INTERVAL_S:-5}'
+      # Garde cet intervalle : sans cela la config du boîtier (60 s par défaut) le remplace.
+      - --lock-interval
+      - --anomaly-every
+      - '${SIM_ANOMALY_EVERY_S:-300}'
+    restart: unless-stopped
+    network_mode: host
+    # Garde l'entrée clavier ouverte (pas de tty : « echo g | docker attach » doit marcher)
+    stdin_open: true
+    environment:
+      MQTT_URL: mqtt://${SIM_MQTT_HOST:-localhost}:${SX_MQTT_PORT:-6083}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  mosquitto_data:

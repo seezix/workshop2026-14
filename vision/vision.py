@@ -75,7 +75,8 @@ BOX_MARGIN = 60             # Marge autour des animaux (et des personnes si pas 
 SILHOUETTE_MARGIN = 15      # Marge autour de la silhouette d'une personne (pixels)
 
 STREAM_PORT = int(os.getenv("VISION_PORT", "5001"))   # flux vidéo + enregistrement
-SHOW_WINDOW = True
+# Fenêtre locale : false sur un serveur sans écran
+SHOW_WINDOW = os.getenv("SHOW_WINDOW", "true").lower() not in ("false", "0")
 
 # "database" (tables persons + face_embeddings) ou "folder" (test sans base)
 KNOWN_FACES_SOURCE = "database"
@@ -702,7 +703,8 @@ def vision_loop():
     if writer:
         writer.release()
         print(f"[INFO] Vidéo enregistrée : {SAVE_FILE}")
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"[INFO] Arrêt. Temps moyen : {avg_ms:.0f} ms/image")
     os._exit(0)
 

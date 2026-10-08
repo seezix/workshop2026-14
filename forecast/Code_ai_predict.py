@@ -156,8 +156,10 @@ def analyser_ligne(row, modele):
         "gas": float(row["gas_avg"]),
     }
     label, cluster_id, distance = classer(mesure, modele)
-    log.debug("%s %s : %s (cluster %s, d=%s)", row["device_id"], row["time"],
-              label, cluster_id, distance)
+    # Une ligne par mesure analysée : la trace que le service lit ce que le boîtier capte
+    log.info("%s : %.1f °C, %.1f %%, gaz %.0f, hall %.0f -> %s", row["device_id"],
+             mesure["temp"], mesure["hum"], mesure["gas"], mesure["hall_state"], label)
+    log.debug("%s %s : cluster %s, d=%s", row["device_id"], row["time"], cluster_id, distance)
     return build_payload(row["device_id"], row["time"].to_pydatetime(),
                          mesure, label, cluster_id, distance)
 
