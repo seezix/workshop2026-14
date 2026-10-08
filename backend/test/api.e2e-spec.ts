@@ -2,6 +2,7 @@
 // Lancés seulement si E2E_DATABASE_URL est défini (compte sentinel_app), par ex. :
 //   E2E_DATABASE_URL=postgres://sentinel_app:...@localhost:5432/sentinel \
 //   E2E_ADMIN_USERNAME=admin E2E_ADMIN_PASSWORD=... npm run test:e2e
+import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
@@ -9,6 +10,7 @@ import request from 'supertest';
 
 const DB_URL = process.env.E2E_DATABASE_URL;
 const SERVICE_KEY = 'e2e-service-key-0123456789';
+const VISION_KEY = 'e2e-vision-key-0123456789';
 
 describe.skipIf(!DB_URL)('API (e2e)', () => {
   let app: INestApplication;
@@ -19,7 +21,7 @@ describe.skipIf(!DB_URL)('API (e2e)', () => {
       DATABASE_URL: DB_URL,
       JWT_SECRET: 'e2e-secret-e2e-secret-e2e-secret-0000',
       MQTT_ENABLED: 'false',
-      SERVICE_API_KEYS: `e2e=${SERVICE_KEY}`,
+      SERVICE_API_KEYS: `e2e=${SERVICE_KEY},vision=${VISION_KEY}`,
     });
     const { AppModule } = await import('../src/app.module.js');
     const moduleRef = await Test.createTestingModule({
@@ -94,5 +96,33 @@ describe.skipIf(!DB_URL)('API (e2e)', () => {
       .send({ action: 'LED', params: { color: 'green' } })
       .expect(409);
     expect(res.body.error.code).toBe('DEVICE_OFFLINE');
+  });
+
+  it("POST /persons/unknowns : mémorise l'inconnu et son empreinte", async () => {
+    const id = randomUUID();
+    const server = app.getHttpServer();
+    const created = await request(server)
+      .post('/api/v1/persons/unknowns')
+      .set('X-Api-Key', VISION_KEY)
+      .send({
+        id,
+        display_name: `Inconnu-${id.slice(0, 4)}`,
+        embedding: Array.from({ length: 128 }, (_, i) => i / 128),
+        model_version: 'e2e',
+      })
+      .expect(201);
+    expect(created.body).toMatchObject({ id, status: 'unknown' });
+
+    const list = await request(server)
+      .get('/api/v1/persons?status=unknown')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const person = list.body.find((p: { id: string }) => p.id === id);
+    expect(person?.embeddings_count).toBe(1);
+
+    await request(server)
+      .delete(`/api/v1/persons/${id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(204);
   });
 });

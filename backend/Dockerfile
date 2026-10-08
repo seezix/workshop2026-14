@@ -2,7 +2,8 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# Le lockfile est écrit par npm 11 : le npm 10 de l'image le juge désynchronisé
+RUN npm install -g npm@11.11.0 && npm ci
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev

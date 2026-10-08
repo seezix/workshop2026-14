@@ -1,0 +1,50 @@
+# Sentinel-X : dashboard, API et flux vidéo derrière la même origine.
+# ${BACKEND_UPSTREAM} et ${VISION_UPSTREAM} viennent de l'environnement du conteneur.
+server {
+  listen 80;
+  server_name _;
+  root /usr/share/nginx/html;
+  index index.html;
+  server_tokens off;
+
+  # DNS de Docker, pour le nom du backend résolu à chaque requête.
+  resolver 127.0.0.11 valid=10s ipv6=off;
+
+  add_header X-Content-Type-Options nosniff always;
+  add_header X-Frame-Options DENY always;
+  add_header Referrer-Policy no-referrer always;
+
+  location /api/ {
+    set $sx_backend ${BACKEND_UPSTREAM};
+    proxy_pass $sx_backend;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection '';
+    # Flux SSE (/api/v1/stream) : pas de tampon, connexion longue
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+  }
+
+  # Flux MJPEG de vision.py (GUIDELINES §6.1), lancé hors Docker sur le serveur.
+  # Adresse fixe, résolue au démarrage par /etc/hosts (host.docker.internal) : le DNS
+  # de Docker ne connaît pas ce nom sous Linux. vision.py arrêté = 502, pas d'erreur nginx.
+  location /video {
+    proxy_pass ${VISION_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Connection '';
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+  }
+
+  location /assets/ {
+    add_header Cache-Control 'public, max-age=31536000, immutable';
+    try_files $uri =404;
+  }
+
+  # Routes React : tout le reste retombe sur index.html
+  location / {
+    try_files $uri /index.html;
+  }
+}

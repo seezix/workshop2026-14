@@ -1,0 +1,4 @@
+# Fichiers montés ou copiés tels quels dans les conteneurs Linux
+*.conf text eol=lf
+*.template text eol=lf
+Dockerfile text eol=lf

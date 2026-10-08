@@ -3,11 +3,17 @@
 // config retained et acquitte les commandes.
 //
 //   npm run sim:esp                      boîtier SX-001, mesures toutes les 20 s
-//   npm run sim:esp -- --auto            + détections aléatoires
+//   npm run sim:esp -- --auto            + détections et anomalies aléatoires
 //   npm run sim:esp -- --id SX-002 --interval 5
+//   npm run sim:esp -- --interval 5 --lock-interval   garde 5 s même si la config du backend dit autre chose
+//   npm run sim:esp -- --auto --anomaly-every 120   une anomalie toutes les 2 min en moyenne (0 = aucune)
 //
-// Au clavier (lettre puis Entrée) : m mouvement, i présence IR, g gaz,
-// t sabotage, f panne capteur, a aimant (champ magnétique), q quitter.
+// Au clavier (lettre puis Entrée) :
+//   détections, envoyées en événement comme le firmware :
+//     m mouvement, i présence IR, t sabotage, f panne capteur
+//   anomalies d'environnement, visibles seulement dans les mesures (voir ANOMALIES) :
+//     g fuite de gaz, b incendie, p pluie, a aimant
+//   q quitter
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import mqtt from 'mqtt';
@@ -17,6 +23,8 @@ const { values: args } = parseArgs({
     id: { type: 'string', default: 'SX-001' },
     interval: { type: 'string', default: '20' },
     auto: { type: 'boolean', default: false },
+    'lock-interval': { type: 'boolean', default: false },
+    'anomaly-every': { type: 'string', default: '300' },
   },
 });
 
@@ -32,10 +40,34 @@ let seq = 0;
 let timer: NodeJS.Timeout | undefined;
 let motionCount = 0;
 let irCount = 0;
-// Hausse de gaz en cours : s'ajoute aux lectures puis retombe à chaque période.
-let gasBoost = 0;
-// Aimant approché du capteur Hall : décalage appliqué à la période en cours.
-let magnetOffset = 0;
+
+// Anomalies d'environnement : le boîtier n'envoie aucun événement, seules ses
+// mesures changent. C'est le service de prévision qui les reconnaît dans
+// telemetry (plus proche voisin de model_reference_data) et crée l'alerte
+// ANOMALY_DETECTED. Les valeurs visées sont au cœur de chaque étiquette du jeu
+// de référence ; une mesure absente garde sa valeur de repos.
+interface Anomaly {
+  label: string;
+  temp?: number;
+  hum?: number;
+  gas?: number;
+  // Écart du capteur Hall par rapport au repos (pôle au hasard).
+  mag?: () => number;
+}
+const ANOMALIES: Record<string, Anomaly> = {
+  g: { label: 'fuite de gaz', gas: 650 },
+  b: { label: 'incendie', temp: 89, hum: 5.5, gas: 950 },
+  p: { label: 'pluie', temp: 17.5, hum: 88 },
+  a: {
+    label: 'aimant',
+    mag: () => (Math.random() < 0.5 ? -1 : 1) * Math.round(rand(150, 350)),
+  },
+};
+// Durée d'une anomalie : au moins un résumé entier.
+const ANOMALY_S = 30;
+const anomalyEveryS = Math.max(0, Number(args['anomaly-every']) || 0);
+// Anomalie en cours : ses valeurs, l'écart Hall tiré, les résumés restants.
+let anomaly: (Anomaly & { magOffset: number; left: number }) | undefined;
 const seenCommands = new Set<string>();
 
 const log = (msg: string) =>
@@ -43,17 +75,21 @@ const log = (msg: string) =>
 const rand = (min: number, max: number) => min + Math.random() * (max - min);
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-// Marche aléatoire ramenée vers une valeur de repos.
+// Marche aléatoire ramenée vers une valeur de repos ; pendant une anomalie, la
+// lecture oscille autour de la valeur visée.
 function sensor(rest: number, step: number) {
   let value = rest;
-  return () => {
+  return (target?: number) => {
+    if (target !== undefined) return target + rand(-step, step);
     value += rand(-step, step) + (rest - value) * 0.05;
     return value;
   };
 }
 const readTemp = sensor(22, 0.15);
 const readHum = sensor(45, 0.4);
-const readGas = sensor(300, 6);
+// MQ2 : ~150 au repos, comme les mesures « Normal » du jeu de référence IA
+// (model_reference_data) ; vers 300 le service de prévision y voit déjà une fuite.
+const readGas = sensor(150, 3);
 // OH49E : ~512 au repos (VCC/2 sur un ADC 10 bits), l'aimant décale la valeur.
 const readMag = sensor(512, 2);
 
@@ -101,15 +137,17 @@ function event(type: string, extra: object = {}) {
 
 function telemetry() {
   const samples = Math.max(1, Math.round(intervalS / SAMPLE_EVERY_S));
-  const gas = () => Math.min(32767, Math.max(0, readGas() + gasBoost));
-  const mag = () => Math.min(1023, Math.max(0, readMag() + magnetOffset));
+  const now = anomaly;
+  const gas = () => Math.min(32767, Math.max(0, readGas(now?.gas)));
+  const mag = () =>
+    Math.min(1023, Math.max(0, readMag() + (now?.magOffset ?? 0)));
   const msg = {
     seq: seq++,
     uptime_ms: Date.now() - BOOT_AT,
     interval_s: intervalS,
     samples,
-    temperature_c: summary(readTemp, round1, samples),
-    humidity_pct: summary(readHum, round1, samples),
+    temperature_c: summary(() => readTemp(now?.temp), round1, samples),
+    humidity_pct: summary(() => readHum(now?.hum), round1, samples),
     gas_raw: summary(gas, Math.round, samples),
     magnetic_raw: summary(mag, Math.round, samples),
     motion_count: motionCount,
@@ -118,12 +156,23 @@ function telemetry() {
   };
   publish('telemetry', msg);
   log(
-    `→ telemetry ${msg.temperature_c.last} °C, ${msg.humidity_pct.last} %, gaz ${msg.gas_raw.last}, mag ${msg.magnetic_raw.last}`,
+    `→ telemetry ${msg.temperature_c.last} °C, ${msg.humidity_pct.last} %, gaz ${msg.gas_raw.last}, mag ${msg.magnetic_raw.last}${now ? ` (anomalie : ${now.label})` : ''}`,
   );
   motionCount = 0;
   irCount = 0;
-  gasBoost = Math.max(0, gasBoost - 150);
-  magnetOffset = 0;
+  if (now && --now.left <= 0) {
+    anomaly = undefined;
+    log(`Fin de l'anomalie « ${now.label} », retour aux valeurs de repos`);
+  }
+}
+
+function startAnomaly(key: string) {
+  const def = ANOMALIES[key];
+  const left = Math.max(1, Math.ceil(ANOMALY_S / intervalS));
+  anomaly = { ...def, magOffset: def.mag?.() ?? 0, left };
+  log(
+    `Anomalie « ${def.label} » sur ${left} résumé(s), à partir du prochain : aucun événement, c'est la prévision qui alerte`,
+  );
 }
 
 function schedule() {
@@ -145,28 +194,32 @@ const triggers: Record<string, () => void> = {
     const duration = Math.round(rand(1_000, 6_000));
     setTimeout(() => event('IR_CLEARED', { duration_ms: duration }), duration);
   },
-  g: () => {
-    gasBoost = 450;
-    event('GAS_RISE');
-  },
   t: () => event('TAMPER'),
-  a: () => {
-    // Pôle au hasard : la valeur monte ou descend autour du repos.
-    magnetOffset = (Math.random() < 0.5 ? -1 : 1) * Math.round(rand(150, 350));
-    log(`Aimant approché (${magnetOffset > 0 ? '+' : ''}${magnetOffset})`);
-  },
   f: () => event('SENSOR_FAILURE', { sensor: 'dht22' }),
+  ...Object.fromEntries(
+    Object.keys(ANOMALIES).map((key) => [key, () => startAnomaly(key)]),
+  ),
 };
 
 function autoEvents() {
   // En moyenne un mouvement par minute, une présence IR toutes les deux minutes.
   if (Math.random() < intervalS / 60) triggers.m();
   if (Math.random() < intervalS / 120) triggers.i();
+  // Une anomalie d'environnement au hasard, jamais deux à la fois.
+  if (!anomaly && anomalyEveryS && Math.random() < intervalS / anomalyEveryS) {
+    const keys = Object.keys(ANOMALIES);
+    startAnomaly(keys[Math.floor(Math.random() * keys.length)]);
+  }
 }
 
 function onConfig(json: Record<string, unknown>) {
   if (typeof json.armed === 'boolean') armed = json.armed;
+  const ignored =
+    args['lock-interval'] &&
+    typeof json.interval_s === 'number' &&
+    json.interval_s !== intervalS;
   if (
+    !args['lock-interval'] &&
     typeof json.interval_s === 'number' &&
     json.interval_s >= 1 &&
     json.interval_s !== intervalS
@@ -175,7 +228,7 @@ function onConfig(json: Record<string, unknown>) {
     schedule();
   }
   log(
-    `← config : mesures toutes les ${intervalS} s, ${armed ? 'armé' : 'désarmé'}`,
+    `← config : mesures toutes les ${intervalS} s${ignored ? ` (--lock-interval : ${json.interval_s} s demandé, ignoré)` : ''}, ${armed ? 'armé' : 'désarmé'}`,
   );
 }
 
@@ -249,6 +302,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const key = line.trim().toLowerCase();
   if (key === 'q') void quit();
   else if (triggers[key]) triggers[key]();
-  else if (key) log('Touches : m, i, g, t, f, a, q');
+  else if (key)
+    log('Touches : m, i, t, f (détections), g, b, p, a (anomalies), q');
 });
 process.on('SIGINT', () => void quit());
+// docker stop : sans cela le boîtier passerait hors ligne par son Last Will.
+process.on('SIGTERM', () => void quit());

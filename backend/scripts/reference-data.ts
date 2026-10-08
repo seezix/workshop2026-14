@@ -30,7 +30,7 @@ export interface ReferenceRow {
   time: string;
   temp: number;
   hum: number;
-  hallState: boolean;
+  hallState: number;
   gas: number;
   clusterId: number;
   label: string;
@@ -71,7 +71,7 @@ export function parseReferenceLine(line: string): ReferenceRow {
     time: `${timestamp}+00`,
     temp: toNumber('DHT22_Temperature_C', temp),
     hum: toNumber('DHT22_Humidity_Pct', hum),
-    hallState: hallState === 1,
+    hallState,
     gas: toInteger('MQ2_AirQuality_ADC', gas),
     clusterId: toInteger('cluster_id', cluster),
     label,
@@ -83,7 +83,7 @@ async function insertBatch(client: pg.Client, rows: ReferenceRow[]) {
     `INSERT INTO model_reference_data
        (time, temp, hum, hall_state, gas, cluster_id, label)
      SELECT * FROM unnest(
-       $1::timestamptz[], $2::real[], $3::real[], $4::boolean[],
+       $1::timestamptz[], $2::real[], $3::real[], $4::smallint[],
        $5::smallint[], $6::smallint[], $7::text[])`,
     [
       rows.map((r) => r.time),

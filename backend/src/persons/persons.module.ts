@@ -345,9 +345,11 @@ export class PersonsService implements OnModuleInit, OnModuleDestroy {
       if (!person)
         throw new ApiError('VALIDATION_ERROR', 'Cette personne existe déjà');
       // La colonne embedding n'est pas dans le schéma Drizzle (jamais relue par l'API).
+      // sql.param : un tableau interpolé tel quel est éclaté en 128 paramètres,
+      // que Postgres refuse de convertir en real[].
       await tx.execute(
         sql`INSERT INTO face_embeddings (person_id, embedding, model_version, source)
-            VALUES (${body.id}, ${body.embedding}::real[], ${body.model_version}, 'auto')`,
+            VALUES (${body.id}, ${sql.param(body.embedding)}::real[], ${body.model_version}, 'auto')`,
       );
       return toPersonDto(person);
     });

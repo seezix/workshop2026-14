@@ -54,7 +54,7 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 | `npm run db:roles` | Pose les mots de passe de `sentinel_app`, `sentinel_ia`, `sentinel_vision` depuis le `.env` |
 | `npm run db:seed` | Boîtiers `SX-001` et `SX-SIM`, premier compte admin, jeu de référence du modèle IA |
 | `npm run db:setup` | Les trois à la suite |
-| `npm run sim:esp` | Faux boîtier MQTT pour travailler sans matériel (`-- --auto` pour des détections aléatoires, voir `scripts/fake-esp.ts`) |
+| `npm run sim:esp` | Faux boîtier MQTT pour travailler sans matériel (`-- --auto` pour des détections et des anomalies d'environnement aléatoires, voir `scripts/fake-esp.ts`) |
 
 ## Base de données
 
@@ -95,6 +95,5 @@ Swagger UI : http://localhost:3000/api/docs (document OpenAPI brut : `/api/docs-
 
 ## Reste à faire
 
-- `docker-compose.yml` à la racine (brique INFRA) : services `db`, `mosquitto`, `backend`, `nginx`, avec `npm run db:setup` au premier lancement. `docker-compose.dev.yml` ne couvre que la base et le broker de dev.
+- `docker-compose.yml` à la racine : il lance tout le projet (voir le README racine), mais avec un broker en clair et un dashboard en HTTP. Restent à la brique INFRA : TLS sur le broker (8883) avec ACL par client, HTTPS (443), puis `NODE_ENV=production`.
 - `tools/fake-esp` pour générer l'historique de `SX-SIM`.
-- Le Dockerfile n'a pas pu être construit dans l'environnement de développement de cette PR (pas d'accès réseau pour `npm ci`) : à vérifier sur une machine de l'équipe.
