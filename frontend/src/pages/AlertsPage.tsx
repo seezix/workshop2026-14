@@ -27,6 +27,31 @@ function detailValue(v: unknown): string {
   return JSON.stringify(v)
 }
 
+/** Capture jointe par vision.py, servie par le boîtier (proxy /video) et effacée après 24 h. */
+function Snapshot({ name }: { name: string }) {
+  const [missing, setMissing] = useState(false)
+  if (missing) {
+    return (
+      <div className="flex aspect-[4/3] items-center justify-center rounded-md bg-soft p-4 text-center text-[13px] text-muted">
+        Capture {name} expirée ou indisponible (effacée après 24 h)
+      </div>
+    )
+  }
+  return (
+    <figure className="m-0 flex flex-col gap-1">
+      <a href={`/video/snapshots/${encodeURIComponent(name)}`} target="_blank" rel="noreferrer">
+        <img
+          src={`/video/snapshots/${encodeURIComponent(name)}`}
+          alt="Capture de la caméra au moment de l'alerte"
+          className="aspect-[4/3] w-full rounded-md bg-soft object-cover"
+          onError={() => setMissing(true)}
+        />
+      </a>
+      <figcaption className="text-[12px] text-muted">Capture · supprimée après 24 h</figcaption>
+    </figure>
+  )
+}
+
 export function AlertsPage() {
   const { can } = useAuth()
   const { upsertAlert } = useLive()
@@ -234,9 +259,7 @@ export function AlertsPage() {
               {current.message && <p className="m-0 text-sm text-muted">{current.message}</p>}
 
               {typeof current.details?.snapshot === 'string' && (
-                <div className="flex aspect-[4/3] items-center justify-center rounded-md bg-soft p-4 text-center text-[13px] text-muted">
-                  Capture {current.details.snapshot} · supprimée après 24 h
-                </div>
+                <Snapshot key={current.details.snapshot} name={current.details.snapshot} />
               )}
 
               <dl className="m-0 grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">

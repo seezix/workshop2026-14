@@ -14,6 +14,7 @@ SENTINEL-X - Module Vision (filière IA) - v5 : branché sur l'API et le dashboa
 - Sert sur http://<IP_DU_SERVEUR>:5001 (VISION_PORT) :
     * GET  /video/stream : vidéo annotée pour le dashboard
     * POST /enroll       : enregistrement d'une personne, appelé par le backend
+    * GET  /video/snapshots/<nom> : capture jointe à une alerte (effacée après 24 h)
 
 Utilisation :
     python vision.py                                   (webcam)
@@ -35,9 +36,10 @@ import cv2
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from ultralytics import YOLO
 
+import snapshots
 from alerts import VisitLog, build_payload, post_alert
 from enroll import ENROLL_TIMEOUT, Enroller, find_duplicate
 from faces import (MATCH_THRESHOLD, MODEL_VERSION, UNKNOWN_MAX_SCORE, FaceEngine,
@@ -75,6 +77,8 @@ BOX_MARGIN = 60             # Marge autour des animaux (et des personnes si pas 
 SILHOUETTE_MARGIN = 15      # Marge autour de la silhouette d'une personne (pixels)
 
 STREAM_PORT = int(os.getenv("VISION_PORT", "5001"))   # flux vidéo + enregistrement
+SNAPSHOT_FOLDER = Path(os.getenv("SNAPSHOT_FOLDER", Path(__file__).parent / "captures"))
+SNAPSHOT_QUALITY = 80       # Qualité JPEG des captures jointes aux alertes
 # Fenêtre locale : false sur un serveur sans écran
 SHOW_WINDOW = os.getenv("SHOW_WINDOW", "true").lower() not in ("false", "0")
 
@@ -253,12 +257,15 @@ def reload_loop():
     while True:
         time.sleep(RELOAD_INTERVAL)
         reload_known_faces()
+        snapshots.purge(SNAPSHOT_FOLDER)
 
 
 # -------------------- Alertes --------------------
-def send_alert(alert_type, labels, keys, causes=None):
-    """Envoie l'alerte puis rattache son id aux passages (face_sightings.alert_id)."""
-    payload = build_payload(alert_type, DEVICE_ID, labels, causes)
+def send_alert(alert_type, labels, keys, causes=None, jpeg=None):
+    """Envoie l'alerte puis rattache son id aux passages (face_sightings.alert_id).
+    jpeg = image annotée du moment de la détection, gardée 24 h sur le boîtier."""
+    snapshot = snapshots.save(SNAPSHOT_FOLDER, jpeg) if jpeg else None
+    payload = build_payload(alert_type, DEVICE_ID, labels, causes, snapshot=snapshot)
     alert_id = post_alert(payload, API_URL, API_KEY, TLS_VERIFY)
     if alert_id and db and keys:
         db.submit("alert_link", keys, alert_id)
@@ -280,6 +287,14 @@ def generate_stream():
 @app.route("/video/stream")     # chemin attendu par le dashboard (GUIDELINES §6.1)
 def video():
     return Response(generate_stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/video/snapshots/<name>")
+def snapshot(name):
+    # Sous /video : même chemin que le flux (proxy Vite en dev, nginx en production)
+    if not snapshots.is_valid_name(name):
+        abort(404)
+    return send_from_directory(SNAPSHOT_FOLDER, name, mimetype="image/jpeg")
 
 
 # -------------------- Enregistrement (appelé par le backend) --------------------
@@ -673,12 +688,17 @@ def vision_loop():
         if object_seen and now - last_object_alert > OBJECT_ALERT_COOLDOWN:
             last_object_alert = now
             new_alerts["unidentified"].append(("NON IDENTIFIE", None, "objet en mouvement"))
+        jpeg = None
+        if any(new_alerts.values()):
+            # La capture montre l'image annotée (cadres et étiquettes) au moment de l'alerte
+            ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, SNAPSHOT_QUALITY])
+            jpeg = jpg.tobytes() if ok else None
         for alert_type, items in new_alerts.items():
             if items:
                 labels = [label for label, _, _ in items]
                 keys = [key for _, key, _ in items if key and not key.startswith("animal-")]
                 causes = [cause for _, _, cause in items]
-                threading.Thread(target=send_alert, args=(alert_type, labels, keys, causes),
+                threading.Thread(target=send_alert, args=(alert_type, labels, keys, causes, jpeg),
                                  daemon=True).start()
         animal_frames = {k: v for k, v in animal_frames.items()
                          if any(d[3] == k for d in detections)}
@@ -718,6 +738,7 @@ if __name__ == "__main__":
 
     ensure_models()
     reload_known_faces()
+    snapshots.purge(SNAPSHOT_FOLDER)
     threading.Thread(target=reload_loop, daemon=True).start()
     threading.Thread(target=run_server, daemon=True).start()
     try:
