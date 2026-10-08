@@ -54,7 +54,7 @@ const baseOption = (spanDays: number): ChartOption => ({
   yAxis: { type: 'value', scale: true, axisLabel: { color: MUTED }, splitLine: { lineStyle: { color: GRID_LINE } } },
 })
 
-/** Courbe moyenne + bande min / max (pile min, puis max - min). Le survol donne le min et le max. */
+/** Courbe moyenne + bande min / max (pile min, puis max - min). Le survol donne min, moyenne et max. */
 function bandOption(points: TelemetryPoint[], pick: (p: TelemetryPoint) => Measure, name: string, unit: string, spanDays: number): ChartOption {
   const t = (p: TelemetryPoint) => new Date(p.time).getTime()
   const valid = points.filter((p) => pick(p).min !== null && pick(p).max !== null)
@@ -65,8 +65,8 @@ function bandOption(points: TelemetryPoint[], pick: (p: TelemetryPoint) => Measu
       formatter: (items: { seriesName: string; data: [number, number | null, number | null, number | null] }[]) => {
         const item = items.find((i) => i.seriesName === name)
         if (!item) return ''
-        const [time, , min, max] = item.data
-        return `${new Date(time).toLocaleString('fr-FR', { timeZone: TZ })}<br/>min ${fmt1(min)} ${unit}<br/>max ${fmt1(max)} ${unit}`
+        const [time, avg, min, max] = item.data
+        return `${new Date(time).toLocaleString('fr-FR', { timeZone: TZ })}<br/>min ${fmt1(min)} ${unit}<br/>moy. ${fmt1(avg)} ${unit}<br/>max ${fmt1(max)} ${unit}`
       },
     },
     series: [
@@ -360,10 +360,10 @@ export function HistoryPage() {
       </section>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(440px,100%),1fr))] gap-4">
-        <ChartCard title="Température" hint="moyenne pondérée + bande min / max (survol : min / max)">
+        <ChartCard title="Température" hint="moyenne pondérée + bande min / max">
           <EChart option={charts.temperature} label="Courbe de température" />
         </ChartCard>
-        <ChartCard title="Humidité" hint="moyenne + bande min / max (survol : min / max)">
+        <ChartCard title="Humidité" hint="moyenne + bande min / max">
           <EChart option={charts.humidity} label="Courbe d'humidité" />
         </ChartCard>
         <ChartCard title="Gaz MQ-2 (valeur brute)" hint="pics conservés via max">
