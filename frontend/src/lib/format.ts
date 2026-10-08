@@ -74,6 +74,8 @@ export const ALERT_TITLES: Record<string, string> = {
   PERSON_UNKNOWN: 'Personne inconnue',
   PERSON_RETURNING: 'Inconnu qui revient',
   PERSON_DENIED: 'Personne refusée',
+  unknown_person: 'Personne inconnue',
+  unidentified: 'Présence non identifiée',
   ANOMALY_DETECTED: 'Anomalie détectée',
   DEVICE_OFFLINE: 'Boîtier hors ligne',
   INTRUSION_CONFIRMED: 'Intrusion confirmée',
