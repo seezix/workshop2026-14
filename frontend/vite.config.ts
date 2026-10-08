@@ -7,10 +7,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      // Juste http://backend:3000 sans rien après !
+      // Docker : nom du service backend dans docker-compose.yml
       '/api': 'http://backend:3000',
-      // Flux MJPEG de vision.py (servi par nginx en production).
-      '/video': 'http://localhost:8080',
+      // Flux MJPEG de vision.py (VISION_PORT de vision/.env ; servi par nginx en production).
+      '/video': 'http://localhost:5001',
     },
   },
 })

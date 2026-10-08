@@ -19,6 +19,7 @@ MATCH_MARGIN = 0.05               # Écart minimum entre les 2 personnes autoris
 MIN_FACE_SIZE = 45                # Taille minimale du visage (pixels) pour l'analyser
 QUALITY_SCORE_MIN = 0.9           # Confiance minimale du détecteur pour analyser un visage
 MAX_YAW = 0.35                    # Rotation max de la tête (0 = de face, plus = de profil)
+REGISTERED = ("authorized", "denied")   # Personnes enregistrées par un admin (≠ inconnus mémorisés)
 
 MODELS_DIR = Path("models")
 YUNET_PATH = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
@@ -66,9 +67,9 @@ class FaceEngine:
     def identify(self, emb, known):
         """Compare une empreinte à la liste connue.
         Retourne (personne reconnue ou None, infos).
-        - Les personnes AUTORISÉES passent en priorité : un inconnu mémorisé
-          ne peut jamais « voler » la place d'une personne enregistrée.
-        - Refuse si deux personnes autorisées se ressemblent trop (ambigu).
+        - Les personnes ENREGISTRÉES (autorisées ou refusées) passent en priorité :
+          un inconnu mémorisé ne peut jamais « voler » la place d'une personne enregistrée.
+        - Refuse si deux personnes enregistrées se ressemblent trop (ambigu).
         infos = {"best_name", "best_score", "auth_score"} (utile pour régler les seuils)"""
         per_person = {}   # meilleur score de chaque personne
         for entry in known:
@@ -78,18 +79,18 @@ class FaceEngine:
                 per_person[key] = (entry, score)
 
         ranked = sorted(per_person.values(), key=lambda x: x[1], reverse=True)
-        authorized = [r for r in ranked if r[0].get("status", "authorized") == "authorized"]
+        registered = [r for r in ranked if r[0].get("status", "authorized") in REGISTERED]
         unknowns = [r for r in ranked if r[0].get("status") == "unknown"]
         infos = {
             "best_name": ranked[0][0]["name"] if ranked else None,
             "best_score": ranked[0][1] if ranked else 0.0,
-            "auth_score": authorized[0][1] if authorized else 0.0,
+            "auth_score": registered[0][1] if registered else 0.0,
         }
 
-        # 1. Personne autorisée (prioritaire)
-        if authorized:
-            best, best_score = authorized[0]
-            second = authorized[1][1] if len(authorized) > 1 else 0.0
+        # 1. Personne enregistrée, autorisée ou refusée (prioritaire)
+        if registered:
+            best, best_score = registered[0]
+            second = registered[1][1] if len(registered) > 1 else 0.0
             if best_score >= MATCH_THRESHOLD and best_score - second >= MATCH_MARGIN:
                 return best, infos
         # 2. Inconnu déjà mémorisé (revient dans la zone)
