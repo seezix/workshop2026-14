@@ -9,3 +9,10 @@ coverage/
 .idea/
 .vscode/
 *.tsbuildinfo
+
+# Secrets (GUIDELINES §10)
+secrets.h
+*.key
+*.pem
+__pycache__/
+venv/

@@ -1,0 +1,8 @@
+ultralytics
+lap
+opencv-python
+numpy
+flask
+requests
+python-dotenv
+psycopg[binary]
