@@ -17,3 +17,6 @@ personnes_autorisees/
 *.mp4
 *.mov
 .pytest_cache/
+
+# Captures jointes aux alertes (images de personnes, effacées après 24 h)
+captures/

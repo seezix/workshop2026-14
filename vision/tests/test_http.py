@@ -136,3 +136,33 @@ def test_enroll_reports_a_database_failure(client, monkeypatch, camera):
     assert res.status_code == 500
     assert vision.known_faces == []
     assert vision.enroller.current() is None
+
+
+def test_snapshot_route_serves_a_saved_capture(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(vision, "SNAPSHOT_FOLDER", tmp_path)
+    name = vision.snapshots.save(tmp_path, b"\xff\xd8jpeg\xff\xd9")
+    r = client.get(f"/video/snapshots/{name}")
+    assert r.status_code == 200
+    assert r.mimetype == "image/jpeg"
+    assert r.data == b"\xff\xd8jpeg\xff\xd9"
+
+
+def test_snapshot_route_refuses_other_files(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(vision, "SNAPSHOT_FOLDER", tmp_path)
+    (tmp_path / "secret.jpg").write_bytes(b"x")
+    assert client.get("/video/snapshots/secret.jpg").status_code == 404
+    assert client.get("/video/snapshots/..%2F.env").status_code == 404
+
+
+def test_snapshot_route_404_once_purged(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(vision, "SNAPSHOT_FOLDER", tmp_path)
+    assert client.get("/video/snapshots/snap-20261008-140312-abcdef.jpg").status_code == 404
+
+
+def test_send_alert_saves_the_capture_and_sends_its_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(vision, "SNAPSHOT_FOLDER", tmp_path)
+    sent = []
+    monkeypatch.setattr(vision, "post_alert", lambda payload, *a, **k: sent.append(payload))
+    vision.send_alert("unknown_person", ["Inconnu-1a2b"], [], ["personne inconnue"], b"jpeg")
+    name = sent[0]["details"]["snapshot"]
+    assert (tmp_path / name).read_bytes() == b"jpeg"

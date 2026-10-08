@@ -100,3 +100,14 @@ def test_visit_log_seed_does_not_overwrite_memory():
     assert visits.touch("ada", 1200) is False       # vue en base il y a 200 s
     visits.seed("ada", 0)                           # rechargement depuis la base
     assert visits.touch("ada", 1300) is False       # la mémoire garde 1200
+
+
+def test_build_payload_carries_only_the_snapshot_name():
+    payload = build_payload("unknown_person", "SX-001", ["Inconnu-1a2b"], ["personne inconnue"],
+                            snapshot="snap-20261008-140312-abcdef.jpg")
+    assert payload["details"]["snapshot"] == "snap-20261008-140312-abcdef.jpg"
+
+
+def test_build_payload_without_snapshot_has_no_snapshot_key():
+    payload = build_payload("unidentified", "SX-001", ["NON IDENTIFIE"], ["animal (cat)"])
+    assert "snapshot" not in payload["details"]

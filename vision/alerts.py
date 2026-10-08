@@ -19,11 +19,12 @@ ALERT_RULES = {   # type -> (severity, message)
 }
 
 
-def build_payload(alert_type, device_id, labels, causes=None, now=None):
-    """Corps de POST /api/v1/alerts : les détections d'une même image sont regroupées."""
+def build_payload(alert_type, device_id, labels, causes=None, now=None, snapshot=None):
+    """Corps de POST /api/v1/alerts : les détections d'une même image sont regroupées.
+    snapshot = nom du fichier de la capture (l'image reste sur le boîtier)."""
     severity, message = ALERT_RULES[alert_type]
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    return {
+    payload = {
         "device_id": device_id,
         "source": "vision",
         "type": alert_type,
@@ -36,6 +37,9 @@ def build_payload(alert_type, device_id, labels, causes=None, now=None):
             "detected_at": moment.isoformat(),
         },
     }
+    if snapshot:
+        payload["details"]["snapshot"] = snapshot
+    return payload
 
 
 def post_alert(payload, api_url, api_key, verify=True, timeout=2):
