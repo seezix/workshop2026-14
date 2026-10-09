@@ -45,6 +45,9 @@ describe('CommandSchema', () => {
     expect(ok({ action: 'LED', params: { color: 'red', blink: true } })).toBe(
       true,
     );
+    expect(
+      ok({ action: 'LED', params: { color: 'green', duration_ms: 2000 } }),
+    ).toBe(true);
   });
 
   it('applique les limites', () => {
@@ -52,6 +55,9 @@ describe('CommandSchema', () => {
       ok({ action: 'BUZZER', params: { mode: 'beep', duration_ms: 10_001 } }),
     ).toBe(false);
     expect(ok({ action: 'LED', params: { color: 'blue' } })).toBe(false);
+    expect(
+      ok({ action: 'LED', params: { color: 'red', duration_ms: 10_001 } }),
+    ).toBe(false);
     expect(ok({ action: 'REBOOT', params: {} })).toBe(false);
     expect(ok({ action: 'LED', params: { color: 'red', extra: 1 } })).toBe(
       false,

@@ -4,9 +4,25 @@ import { AlertsService } from '../alerts/alerts.service.js';
 import { ApiError } from '../common/api-error.js';
 import { DB, type Database } from '../db/database.module.js';
 import { Alert, deviceEvents } from '../db/schema.js';
-import { CommandsService } from '../commands/commands.service.js';
+import {
+  CommandsService,
+  type CommandInput,
+} from '../commands/commands.service.js';
 
 export const INTRUSION_WINDOW_MS = 5_000;
+/** Au-delà, l'alerte est rejouée (tampon hors ligne de l'ESP) : aucun signal. */
+export const SIGNAL_MAX_AGE_MS = 30_000;
+
+// Signal du boîtier pour chaque nouvelle alerte, selon sa gravité.
+export const ALERT_SIGNALS: Record<Alert['severity'], CommandInput[]> = {
+  // Alarme : bips 10 s et LED rouge, jusqu'à ce qu'un opérateur l'éteigne.
+  critical: [
+    { action: 'BUZZER', params: { mode: 'beep', duration_ms: 10_000 } },
+    { action: 'LED', params: { color: 'red', blink: true } },
+  ],
+  warning: [{ action: 'LED', params: { color: 'red', duration_ms: 2_000 } }],
+  info: [{ action: 'LED', params: { color: 'green', duration_ms: 2_000 } }],
+};
 const PERSON_TYPES = [
   'PERSON_DETECTED',
   'PERSON_UNKNOWN',
@@ -19,8 +35,12 @@ const PERSON_TYPES = [
  * automatiques sur le boîtier partent d'ici.
  *
  * Règle intrusion : PIR (MOTION_DETECTED) et vision (PERSON_*) d'accord dans
- * les 5 s → alerte système INTRUSION_CONFIRMED, puis, si le boîtier est armé,
- * buzzer + LED rouge (issuer rule:intrusion).
+ * les 5 s → alerte système INTRUSION_CONFIRMED (ignorée si le boîtier est
+ * désarmé).
+ *
+ * Règle signal : toute nouvelle alerte se voit sur le boîtier (ALERT_SIGNALS,
+ * issuer rule:alert-<gravité>) : alarme et LED rouge pour critical, flash rouge
+ * pour warning, flash vert pour info.
  */
 @Injectable()
 export class RulesService implements OnModuleInit {
@@ -33,9 +53,32 @@ export class RulesService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    this.alerts.onAlert((alert, _outcome, occurredAt) =>
-      this.onAlert(alert, occurredAt),
-    );
+    this.alerts.onAlert(async (alert, outcome, occurredAt) => {
+      // Doublon : le boîtier a déjà signalé cette alerte.
+      if (outcome === 'created') await this.signal(alert, occurredAt);
+      await this.onAlert(alert, occurredAt);
+    });
+  }
+
+  private async signal(alert: Alert, at: Date) {
+    if (Date.now() - at.getTime() > SIGNAL_MAX_AGE_MS) return;
+    try {
+      for (const command of ALERT_SIGNALS[alert.severity]) {
+        await this.commands.issue(
+          alert.deviceId,
+          command,
+          `rule:alert-${alert.severity}`,
+        );
+      }
+    } catch (err) {
+      // Boîtier simulé ou hors ligne (dont sa propre alerte DEVICE_OFFLINE) : rien à signaler.
+      if (err instanceof ApiError && err.code === 'DEVICE_OFFLINE') return;
+      const reason =
+        err instanceof ApiError ? err.code : (err as Error).message;
+      this.logger.warn(
+        `Alerte ${alert.type} non signalée sur ${alert.deviceId} : ${reason}`,
+      );
+    }
   }
 
   /** Appelé par l'ingestion MQTT pour chaque MOTION_DETECTED enregistré. */
@@ -75,6 +118,7 @@ export class RulesService implements OnModuleInit {
     trigger: string,
     visionAlert?: Alert,
   ) {
+    // Alerte critical : c'est la règle signal qui déclenche l'alarme du boîtier.
     const result = await this.alerts.ingest({
       device_id: deviceId,
       source: 'system',
@@ -87,27 +131,8 @@ export class RulesService implements OnModuleInit {
         ...(visionAlert ? { vision_alert_id: visionAlert.id } : {}),
       },
     });
-    // Désarmé : alerte supprimée, aucune action. Doublon : l'alarme sonne déjà.
-    if (result.outcome !== 'created') return;
-
-    this.logger.warn(
-      `Intrusion confirmée sur ${deviceId}, déclenchement de l'alarme`,
-    );
-    try {
-      await this.commands.issue(
-        deviceId,
-        { action: 'BUZZER', params: { mode: 'beep', duration_ms: 10_000 } },
-        'rule:intrusion',
-      );
-      await this.commands.issue(
-        deviceId,
-        { action: 'LED', params: { color: 'red', blink: true } },
-        'rule:intrusion',
-      );
-    } catch (err) {
-      const reason =
-        err instanceof ApiError ? err.code : (err as Error).message;
-      this.logger.warn(`Alarme non déclenchée sur ${deviceId} : ${reason}`);
-    }
+    // Désarmé : alerte supprimée. Doublon : déjà signalée.
+    if (result.outcome === 'created')
+      this.logger.warn(`Intrusion confirmée sur ${deviceId}`);
   }
 }

@@ -36,6 +36,8 @@ export const CommandSchema = z.discriminatedUnion('action', [
       .object({
         color: z.enum(['red', 'green', 'off']),
         blink: z.boolean().optional(),
+        // Flash : la LED revient ensuite à son état précédent. Absent : durable.
+        duration_ms: z.number().int().min(1).max(10_000).optional(),
       })
       .strict(),
   }),

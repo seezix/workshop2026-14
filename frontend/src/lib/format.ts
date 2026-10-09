@@ -107,7 +107,7 @@ export function fmtParams(params: Record<string, unknown>): string {
     .join(' · ')
 }
 
-/** « opérateur » (vous, si c'est l'utilisateur connecté) ou l'issuer brut (rule:intrusion). */
+/** « opérateur » (vous, si c'est l'utilisateur connecté) ou l'issuer brut (rule:alert-critical). */
 export function fmtIssuer(c: { issuer: string; issued_by: string | null }, me?: { id: string; username: string }): string {
   if (c.issuer !== 'user') return c.issuer
   return me && c.issued_by === me.id ? `user · ${me.username}` : 'user · opérateur'

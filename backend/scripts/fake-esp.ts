@@ -260,7 +260,9 @@ function onCommand(json: Record<string, unknown>) {
   } else if (json.action === 'LED') {
     if (!['red', 'green', 'off'].includes(params.color as string))
       return ack('rejected', 'invalid_params');
-    log(`← cmd LED ${params.color}${params.blink ? ' clignotante' : ''}`);
+    log(
+      `← cmd LED ${params.color}${params.blink ? ' clignotante' : ''}${params.duration_ms ? ` ${params.duration_ms} ms` : ''}`,
+    );
   } else {
     return ack('rejected', 'unknown_action');
   }

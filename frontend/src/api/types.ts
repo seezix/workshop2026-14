@@ -126,7 +126,7 @@ export interface Alert {
 
 export type CommandInput =
   | { action: 'BUZZER'; params: { mode: 'on' | 'off' | 'beep'; duration_ms?: number } }
-  | { action: 'LED'; params: { color: 'red' | 'green' | 'off'; blink?: boolean } }
+  | { action: 'LED'; params: { color: 'red' | 'green' | 'off'; blink?: boolean; duration_ms?: number } }
 
 export interface Command {
   cmd_id: string
