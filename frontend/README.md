@@ -7,16 +7,41 @@ React 19 + Vite + TypeScript, Tailwind CSS 4, React Router, Apache ECharts.
 
 ## Lancer
 
+Deux modes, décrits pas à pas dans le [README racine](../README.md) :
+
+| | En conteneur | En local |
+|---|---|---|
+| Commande | `docker compose up -d --build` à la racine | `npm run dev` dans `frontend/` |
+| Dashboard | `http://localhost:6080` | `http://localhost:5173` |
+| Servi par | nginx, à partir du build (`dist/`) | Vite, avec rechargement à chaud |
+| `/api` relayé vers | Conteneur `backend` (port 3000 interne) | `localhost:3000` |
+| `/video` relayé vers | `vision.py` sur le serveur (`host.docker.internal:5001`) | `localhost:5001` |
+
+### En local
+
 ```bash
+cd frontend
 npm install
 npm run dev        # http://localhost:5173
 ```
 
-Le serveur Vite redirige `/api` vers le backend (`localhost:3000`) et `/video`
-vers vision.py (`localhost:8080`, flux MJPEG). En production, nginx sert le
-build (`npm run build` → `dist/`) et fait les mêmes redirections.
+Il faut le backend lancé sur `localhost:3000` (voir [`backend/README.md`](../backend/README.md)) ;
+connexion avec `ADMIN_USERNAME` / `ADMIN_PASSWORD` de `backend/.env`. Les
+redirections `/api` et `/video` (flux MJPEG de vision.py) sont dans
+[`vite.config.ts`](vite.config.ts). Sans vision.py, la vue d'ensemble affiche
+« Flux vidéo indisponible » et le reste fonctionne.
 
-Variable optionnelle : `VITE_DEVICE_ID` (par défaut `SX-001`).
+### En conteneur
+
+Rien à faire dans ce dossier : `docker compose up -d --build` à la racine
+construit le dashboard (`npm run build` → `dist/`) et le sert avec nginx sur le
+port 6080 (`SX_HTTP_PORT` du `.env` racine). Les redirections sont dans
+[`nginx.conf.template`](nginx.conf.template) ; l'adresse de vision.py se change
+avec `VISION_UPSTREAM`. Après un changement de code :
+`docker compose up -d --build frontend`.
+
+Variable optionnelle : `VITE_DEVICE_ID` (par défaut `SX-001`), à mettre dans
+`frontend/.env` en local. L'image Docker ne lit pas ce fichier et garde `SX-001`.
 
 ## Écrans
 

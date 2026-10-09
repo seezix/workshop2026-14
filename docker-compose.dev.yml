@@ -1,11 +1,14 @@
 # Sentinel-X : base et broker pour le développement local (API lancée hors Docker).
 # Ne pas déployer : broker en clair et sans authentification, identifiants de dev.
-# Le docker-compose.yml de production (TLS 8883, backend, nginx) reste la brique INFRA.
+# Pour tout lancer en conteneurs (API, dashboard, prévision) : docker-compose.yml.
 #
 #   docker compose -f docker-compose.dev.yml up -d --wait
 #
-# Ports déjà pris sur la machine : SX_DB_PORT / SX_MQTT_PORT (variables d'environnement
+# Ports publiés : base 5432, broker 1883, sur 127.0.0.1 seulement.
+# Déjà pris sur la machine : SX_DB_PORT / SX_MQTT_PORT (variables d'environnement
 # ou .env à la racine), à reporter dans DATABASE_URL, DB_ADMIN_URL et MQTT_URL.
+# Le .env racine est aussi lu par docker-compose.yml : n'y mettre ces deux variables
+# que si une seule des deux piles tourne sur la machine.
 name: sentinel-x-dev
 
 services:

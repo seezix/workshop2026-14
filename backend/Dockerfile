@@ -14,7 +14,7 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-# Migrations et scripts d'administration : docker compose run --rm backend npm run db:setup
+# Migrations et scripts d'administration : docker compose run --rm setup
 COPY db ./db
 COPY scripts ./scripts
 USER node

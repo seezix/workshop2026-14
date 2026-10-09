@@ -30,6 +30,17 @@ Service IA (anomalies) ── lit la base, écrit anomaly_scores, POST /alerts
 - Le backend est **le seul** à écrire les données métier et à pousser vers le dashboard.
 - Le flux vidéo annoté de vision.py arrive au dashboard **directement via nginx**.
 
+> **Ports : cible et état actuel.** Les ports 8883 (MQTTS) et 443 (HTTPS) de ce document sont la cible, à la charge de la brique INFRA. Dans le `docker-compose.yml` livré, le broker est déjà en MQTTS (sans authentification ni ACL pour l'instant), le dashboard encore en HTTP :
+>
+> | Service | Conteneurs (`docker-compose.yml`) | Développement local |
+> |---|---|---|
+> | Dashboard + API | `6080` (HTTP, nginx) | `5173` (Vite) et `3000` (API) |
+> | Broker MQTT | `6083` (MQTTS) | `1883` (en clair) |
+> | Base PostgreSQL | `6032` (127.0.0.1) | `5432` (127.0.0.1) |
+> | vision.py | `5001` (hors Docker) | `5001` |
+>
+> Commandes de lancement des deux modes : [`README.md`](../README.md).
+
 ---
 
 ## 3. Stack technique
@@ -151,7 +162,7 @@ Types : `BOOT`, `MOTION_DETECTED`, `IR_DETECTED`, `IR_CLEARED`, `GAS_RISE`, `TAM
 | `action` | `params` | Limites appliquées par l'ESP |
 |---|---|---|
 | `BUZZER` | `mode` : `on`, `off`, `beep` ; `duration_ms` | 10 000 ms max |
-| `LED` | `color` : `red`, `green`, `off` ; `blink` : bool | |
+| `LED` | `color` : `red`, `green`, `off` ; `blink` : bool ; `duration_ms` | 10 000 ms max. Avec `duration_ms`, c'est un flash : la LED revient ensuite à son état précédent. Sans, l'état reste jusqu'au prochain ordre |
 
 **cmd/ack** : `{ "cmd_id": "c-8f2a91", "status": "done" }` ou `"rejected"` avec `"reason"` (`unknown_action`, `invalid_params`, `duplicate`).
 
@@ -250,8 +261,16 @@ Parcours d'une commande :
 | Source | Comment | `issuer` | Exemple |
 |---|---|---|---|
 | Un opérateur | Front → `POST /commands` | `user` | Bouton « Tester l'alarme » |
-| Une règle du backend | Interne, après une alerte | `rule:<nom>` | `INTRUSION_CONFIRMED` + armé → buzzer + LED rouge |
+| Une règle du backend | Interne, après une alerte | `rule:<nom>` | Alerte `critical` → buzzer + LED rouge |
 | L'ESP lui-même | Réflexe local, sans réseau | (non enregistré) | PIR → LED rouge immédiate |
+
+**Signal du boîtier sur alerte** (`rules.service.ts`, issuer `rule:alert-<gravité>`) : chaque nouvelle alerte, quelle que soit sa source, se voit sur le boîtier. Un doublon ou une alerte rejouée (plus de 30 s) ne déclenche rien.
+
+| Gravité | Commandes envoyées |
+|---|---|
+| `critical` | `BUZZER beep` 10 s + `LED red` clignotante, jusqu'à ce qu'un opérateur l'éteigne |
+| `warning` | `LED red` pendant 2 s |
+| `info` | `LED green` pendant 2 s |
 
 **L'IA détecte, le backend décide.** vision.py et le service d'anomalies n'envoient pas de commandes : ils envoient des alertes (`POST /alerts`), et ce sont les règles du backend qui déclenchent les actions. Toutes les décisions sont au même endroit, donc faciles à tester, à expliquer et à couper.
 
@@ -298,7 +317,7 @@ Schéma de référence : `docs/schema-bdd.puml` (v0.4.1).
 | `model_reference_data` | Jeu de référence du modèle IA de prévision : mesures étiquetées, chargées à l'initialisation |
 | `device_events` | Détections et événements techniques |
 | `alerts` | Ce qui demande une action humaine |
-| `commands` | Commandes et leur accusé. `issuer` (obligatoire) dit qui l'a déclenchée (`user`, `rule:intrusion`...), `issued_by` (facultatif) pointe vers l'utilisateur quand il y en a un |
+| `commands` | Commandes et leur accusé. `issuer` (obligatoire) dit qui l'a déclenchée (`user`, `rule:alert-critical`...), `issued_by` (facultatif) pointe vers l'utilisateur quand il y en a un |
 | `audit_log` | Connexions, échecs, actions sensibles |
 | `persons`, `face_embeddings`, `face_sightings` | Reconnaissance faciale (voir section 8) |
 | `telemetry_1h`, `telemetry_1d` | Agrégats continus (vues) |
